@@ -1,9 +1,9 @@
 #!/usr/bin/env bun
 /**
- * claude-peers broker daemon
+ * cc-mate broker daemon
  *
- * A singleton HTTP server on localhost:7899 backed by SQLite.
- * Tracks all registered Claude Code peers and routes messages between them.
+ * A singleton HTTP server on localhost:7349 backed by SQLite.
+ * Tracks all registered Claude Code mates and routes messages between them.
  *
  * Auto-launched by the MCP server if not already running.
  * Run directly: bun broker.ts
@@ -15,16 +15,16 @@ import type {
   RegisterResponse,
   HeartbeatRequest,
   SetSummaryRequest,
-  ListPeersRequest,
+  ListMatesRequest,
   SendMessageRequest,
   PollMessagesRequest,
   PollMessagesResponse,
-  Peer,
+  Mate,
   Message,
 } from "./shared/types.ts";
 
-const PORT = parseInt(process.env.CLAUDE_PEERS_PORT ?? "7899", 10);
-const DB_PATH = process.env.CLAUDE_PEERS_DB ?? `${process.env.HOME}/.claude-peers.db`;
+const PORT = parseInt(process.env.CC_MATE_PORT ?? "7349", 10);
+const DB_PATH = process.env.CC_MATE_DB ?? `${process.env.HOME}/.cc-mate.db`;
 
 // --- Database setup ---
 
@@ -33,7 +33,7 @@ db.run("PRAGMA journal_mode = WAL");
 db.run("PRAGMA busy_timeout = 3000");
 
 db.run(`
-  CREATE TABLE IF NOT EXISTS peers (
+  CREATE TABLE IF NOT EXISTS mates (
     id TEXT PRIMARY KEY,
     pid INTEGER NOT NULL,
     cwd TEXT NOT NULL,
@@ -53,60 +53,60 @@ db.run(`
     text TEXT NOT NULL,
     sent_at TEXT NOT NULL,
     delivered INTEGER NOT NULL DEFAULT 0,
-    FOREIGN KEY (from_id) REFERENCES peers(id),
-    FOREIGN KEY (to_id) REFERENCES peers(id)
+    FOREIGN KEY (from_id) REFERENCES mates(id),
+    FOREIGN KEY (to_id) REFERENCES mates(id)
   )
 `);
 
-// Clean up stale peers (PIDs that no longer exist) on startup
-function cleanStalePeers() {
-  const peers = db.query("SELECT id, pid FROM peers").all() as { id: string; pid: number }[];
-  for (const peer of peers) {
+// Clean up stale mates (PIDs that no longer exist) on startup
+function cleanStaleMates() {
+  const mates = db.query("SELECT id, pid FROM mates").all() as { id: string; pid: number }[];
+  for (const mate of mates) {
     try {
       // Check if process is still alive (signal 0 doesn't kill, just checks)
-      process.kill(peer.pid, 0);
+      process.kill(mate.pid, 0);
     } catch {
       // Process doesn't exist, remove it
-      db.run("DELETE FROM peers WHERE id = ?", [peer.id]);
-      db.run("DELETE FROM messages WHERE to_id = ? AND delivered = 0", [peer.id]);
+      db.run("DELETE FROM mates WHERE id = ?", [mate.id]);
+      db.run("DELETE FROM messages WHERE to_id = ? AND delivered = 0", [mate.id]);
     }
   }
 }
 
-cleanStalePeers();
+cleanStaleMates();
 
-// Periodically clean stale peers (every 30s)
-setInterval(cleanStalePeers, 30_000);
+// Periodically clean stale mates (every 30s)
+setInterval(cleanStaleMates, 30_000);
 
 // --- Prepared statements ---
 
-const insertPeer = db.prepare(`
-  INSERT INTO peers (id, pid, cwd, git_root, tty, summary, registered_at, last_seen)
+const insertMate = db.prepare(`
+  INSERT INTO mates (id, pid, cwd, git_root, tty, summary, registered_at, last_seen)
   VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 `);
 
 const updateLastSeen = db.prepare(`
-  UPDATE peers SET last_seen = ? WHERE id = ?
+  UPDATE mates SET last_seen = ? WHERE id = ?
 `);
 
 const updateSummary = db.prepare(`
-  UPDATE peers SET summary = ? WHERE id = ?
+  UPDATE mates SET summary = ? WHERE id = ?
 `);
 
-const deletePeer = db.prepare(`
-  DELETE FROM peers WHERE id = ?
+const deleteMate = db.prepare(`
+  DELETE FROM mates WHERE id = ?
 `);
 
-const selectAllPeers = db.prepare(`
-  SELECT * FROM peers
+const selectAllMates = db.prepare(`
+  SELECT * FROM mates
 `);
 
-const selectPeersByDirectory = db.prepare(`
-  SELECT * FROM peers WHERE cwd = ?
+const selectMatesByDirectory = db.prepare(`
+  SELECT * FROM mates WHERE cwd = ?
 `);
 
-const selectPeersByGitRoot = db.prepare(`
-  SELECT * FROM peers WHERE git_root = ?
+const selectMatesByGitRoot = db.prepare(`
+  SELECT * FROM mates WHERE git_root = ?
 `);
 
 const insertMessage = db.prepare(`
@@ -122,7 +122,7 @@ const markDelivered = db.prepare(`
   UPDATE messages SET delivered = 1 WHERE id = ?
 `);
 
-// --- Generate peer ID ---
+// --- Generate mate ID ---
 
 function generateId(): string {
   const chars = "abcdefghijklmnopqrstuvwxyz0123456789";
@@ -140,12 +140,12 @@ function handleRegister(body: RegisterRequest): RegisterResponse {
   const now = new Date().toISOString();
 
   // Remove any existing registration for this PID (re-registration)
-  const existing = db.query("SELECT id FROM peers WHERE pid = ?").get(body.pid) as { id: string } | null;
+  const existing = db.query("SELECT id FROM mates WHERE pid = ?").get(body.pid) as { id: string } | null;
   if (existing) {
-    deletePeer.run(existing.id);
+    deleteMate.run(existing.id);
   }
 
-  insertPeer.run(id, body.pid, body.cwd, body.git_root, body.tty, body.summary, now, now);
+  insertMate.run(id, body.pid, body.cwd, body.git_root, body.tty, body.summary, now, now);
   return { id };
 }
 
@@ -157,41 +157,41 @@ function handleSetSummary(body: SetSummaryRequest): void {
   updateSummary.run(body.summary, body.id);
 }
 
-function handleListPeers(body: ListPeersRequest): Peer[] {
-  let peers: Peer[];
+function handleListMates(body: ListMatesRequest): Mate[] {
+  let mates: Mate[];
 
   switch (body.scope) {
     case "machine":
-      peers = selectAllPeers.all() as Peer[];
+      mates = selectAllMates.all() as Mate[];
       break;
     case "directory":
-      peers = selectPeersByDirectory.all(body.cwd) as Peer[];
+      mates = selectMatesByDirectory.all(body.cwd) as Mate[];
       break;
     case "repo":
       if (body.git_root) {
-        peers = selectPeersByGitRoot.all(body.git_root) as Peer[];
+        mates = selectMatesByGitRoot.all(body.git_root) as Mate[];
       } else {
         // No git root, fall back to directory
-        peers = selectPeersByDirectory.all(body.cwd) as Peer[];
+        mates = selectMatesByDirectory.all(body.cwd) as Mate[];
       }
       break;
     default:
-      peers = selectAllPeers.all() as Peer[];
+      mates = selectAllMates.all() as Mate[];
   }
 
-  // Exclude the requesting peer
+  // Exclude the requesting mate
   if (body.exclude_id) {
-    peers = peers.filter((p) => p.id !== body.exclude_id);
+    mates = mates.filter((p) => p.id !== body.exclude_id);
   }
 
-  // Verify each peer's process is still alive
-  return peers.filter((p) => {
+  // Verify each mate's process is still alive
+  return mates.filter((p) => {
     try {
       process.kill(p.pid, 0);
       return true;
     } catch {
-      // Clean up dead peer
-      deletePeer.run(p.id);
+      // Clean up dead mate
+      deleteMate.run(p.id);
       return false;
     }
   });
@@ -199,9 +199,9 @@ function handleListPeers(body: ListPeersRequest): Peer[] {
 
 function handleSendMessage(body: SendMessageRequest): { ok: boolean; error?: string } {
   // Verify target exists
-  const target = db.query("SELECT id FROM peers WHERE id = ?").get(body.to_id) as { id: string } | null;
+  const target = db.query("SELECT id FROM mates WHERE id = ?").get(body.to_id) as { id: string } | null;
   if (!target) {
-    return { ok: false, error: `Peer ${body.to_id} not found` };
+    return { ok: false, error: `Mate ${body.to_id} not found` };
   }
 
   insertMessage.run(body.from_id, body.to_id, body.text, new Date().toISOString());
@@ -220,7 +220,7 @@ function handlePollMessages(body: PollMessagesRequest): PollMessagesResponse {
 }
 
 function handleUnregister(body: { id: string }): void {
-  deletePeer.run(body.id);
+  deleteMate.run(body.id);
 }
 
 // --- HTTP Server ---
@@ -234,9 +234,9 @@ Bun.serve({
 
     if (req.method !== "POST") {
       if (path === "/health") {
-        return Response.json({ status: "ok", peers: (selectAllPeers.all() as Peer[]).length });
+        return Response.json({ status: "ok", mates: (selectAllMates.all() as Mate[]).length });
       }
-      return new Response("claude-peers broker", { status: 200 });
+      return new Response("cc-mate broker", { status: 200 });
     }
 
     try {
@@ -251,8 +251,8 @@ Bun.serve({
         case "/set-summary":
           handleSetSummary(body as SetSummaryRequest);
           return Response.json({ ok: true });
-        case "/list-peers":
-          return Response.json(handleListPeers(body as ListPeersRequest));
+        case "/list-mates":
+          return Response.json(handleListMates(body as ListMatesRequest));
         case "/send-message":
           return Response.json(handleSendMessage(body as SendMessageRequest));
         case "/poll-messages":
@@ -270,4 +270,4 @@ Bun.serve({
   },
 });
 
-console.error(`[claude-peers broker] listening on 127.0.0.1:${PORT} (db: ${DB_PATH})`);
+console.error(`[cc-mate broker] listening on 127.0.0.1:${PORT} (db: ${DB_PATH})`);

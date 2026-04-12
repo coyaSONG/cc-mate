@@ -1,6 +1,6 @@
 {
   "mcpServers": {
-    "claude-peers": {
+    "cc-mate": {
       "command": "bun",
       "args": ["./server.ts"]
     }

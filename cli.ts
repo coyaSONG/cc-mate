@@ -1,17 +1,17 @@
 #!/usr/bin/env bun
 /**
- * claude-peers CLI
+ * cc-mate CLI
  *
- * Utility commands for managing the broker and inspecting peers.
+ * Utility commands for managing the broker and inspecting mates.
  *
  * Usage:
- *   bun cli.ts status          — Show broker status and all peers
- *   bun cli.ts peers           — List all peers
- *   bun cli.ts send <id> <msg> — Send a message to a peer
+ *   bun cli.ts status          — Show broker status and all mates
+ *   bun cli.ts mates           — List all mates
+ *   bun cli.ts send <id> <msg> — Send a message to a mate
  *   bun cli.ts kill-broker     — Stop the broker daemon
  */
 
-const BROKER_PORT = parseInt(process.env.CLAUDE_PEERS_PORT ?? "7899", 10);
+const BROKER_PORT = parseInt(process.env.CC_MATE_PORT ?? "7349", 10);
 const BROKER_URL = `http://127.0.0.1:${BROKER_PORT}`;
 
 async function brokerFetch<T>(path: string, body?: unknown): Promise<T> {
@@ -37,12 +37,12 @@ const cmd = process.argv[2];
 switch (cmd) {
   case "status": {
     try {
-      const health = await brokerFetch<{ status: string; peers: number }>("/health");
-      console.log(`Broker: ${health.status} (${health.peers} peer(s) registered)`);
+      const health = await brokerFetch<{ status: string; mates: number }>("/health");
+      console.log(`Broker: ${health.status} (${health.mates} mate(s) registered)`);
       console.log(`URL: ${BROKER_URL}`);
 
-      if (health.peers > 0) {
-        const peers = await brokerFetch<
+      if (health.mates > 0) {
+        const mates = await brokerFetch<
           Array<{
             id: string;
             pid: number;
@@ -52,14 +52,14 @@ switch (cmd) {
             summary: string;
             last_seen: string;
           }>
-        >("/list-peers", {
+        >("/list-mates", {
           scope: "machine",
           cwd: "/",
           git_root: null,
         });
 
-        console.log("\nPeers:");
-        for (const p of peers) {
+        console.log("\nMates:");
+        for (const p of mates) {
           console.log(`  ${p.id}  PID:${p.pid}  ${p.cwd}`);
           if (p.summary) console.log(`         ${p.summary}`);
           if (p.tty) console.log(`         TTY: ${p.tty}`);
@@ -72,9 +72,9 @@ switch (cmd) {
     break;
   }
 
-  case "peers": {
+  case "mates": {
     try {
-      const peers = await brokerFetch<
+      const mates = await brokerFetch<
         Array<{
           id: string;
           pid: number;
@@ -84,16 +84,16 @@ switch (cmd) {
           summary: string;
           last_seen: string;
         }>
-      >("/list-peers", {
+      >("/list-mates", {
         scope: "machine",
         cwd: "/",
         git_root: null,
       });
 
-      if (peers.length === 0) {
-        console.log("No peers registered.");
+      if (mates.length === 0) {
+        console.log("No mates registered.");
       } else {
-        for (const p of peers) {
+        for (const p of mates) {
           const parts = [`${p.id}  PID:${p.pid}  ${p.cwd}`];
           if (p.summary) parts.push(`  Summary: ${p.summary}`);
           console.log(parts.join("\n"));
@@ -109,7 +109,7 @@ switch (cmd) {
     const toId = process.argv[3];
     const msg = process.argv.slice(4).join(" ");
     if (!toId || !msg) {
-      console.error("Usage: bun cli.ts send <peer-id> <message>");
+      console.error("Usage: bun cli.ts send <mate-id> <message>");
       process.exit(1);
     }
     try {
@@ -131,8 +131,8 @@ switch (cmd) {
 
   case "kill-broker": {
     try {
-      const health = await brokerFetch<{ status: string; peers: number }>("/health");
-      console.log(`Broker has ${health.peers} peer(s). Shutting down...`);
+      const health = await brokerFetch<{ status: string; mates: number }>("/health");
+      console.log(`Broker has ${health.mates} mate(s). Shutting down...`);
       // Find and kill the broker process on the port
       const proc = Bun.spawnSync(["lsof", "-ti", `:${BROKER_PORT}`]);
       const pids = new TextDecoder()
@@ -151,11 +151,11 @@ switch (cmd) {
   }
 
   default:
-    console.log(`claude-peers CLI
+    console.log(`cc-mate CLI
 
 Usage:
-  bun cli.ts status          Show broker status and all peers
-  bun cli.ts peers           List all peers
-  bun cli.ts send <id> <msg> Send a message to a peer
+  bun cli.ts status          Show broker status and all mates
+  bun cli.ts mates           List all mates
+  bun cli.ts send <id> <msg> Send a message to a mate
   bun cli.ts kill-broker     Stop the broker daemon`);
 }

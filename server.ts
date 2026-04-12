@@ -1,16 +1,16 @@
 #!/usr/bin/env bun
 /**
- * claude-peers MCP server
+ * cc-mate MCP server
  *
  * Spawned by Claude Code as a stdio MCP server (one per instance).
- * Connects to the shared broker daemon for peer discovery and messaging.
+ * Connects to the shared broker daemon for mate discovery and messaging.
  * Declares claude/channel capability to push inbound messages immediately.
  *
  * Usage:
- *   claude --dangerously-load-development-channels server:claude-peers
+ *   claude --dangerously-load-development-channels server:cc-mate
  *
  * With .mcp.json:
- *   { "claude-peers": { "command": "bun", "args": ["./server.ts"] } }
+ *   { "cc-mate": { "command": "bun", "args": ["./server.ts"] } }
  */
 
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
@@ -20,8 +20,8 @@ import {
   CallToolRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 import type {
-  PeerId,
-  Peer,
+  MateId,
+  Mate,
   RegisterResponse,
   PollMessagesResponse,
   Message,
@@ -34,7 +34,7 @@ import {
 
 // --- Configuration ---
 
-const BROKER_PORT = parseInt(process.env.CLAUDE_PEERS_PORT ?? "7899", 10);
+const BROKER_PORT = parseInt(process.env.CC_MATE_PORT ?? "7349", 10);
 const BROKER_URL = `http://127.0.0.1:${BROKER_PORT}`;
 const POLL_INTERVAL_MS = 1000;
 const HEARTBEAT_INTERVAL_MS = 15_000;
@@ -95,7 +95,7 @@ async function ensureBroker(): Promise<void> {
 
 function log(msg: string) {
   // MCP stdio servers must only use stderr for logging (stdout is the MCP protocol)
-  console.error(`[claude-peers] ${msg}`);
+  console.error(`[cc-mate] ${msg}`);
 }
 
 async function getGitRoot(cwd: string): Promise<string | null> {
@@ -135,29 +135,29 @@ function getTty(): string | null {
 
 // --- State ---
 
-let myId: PeerId | null = null;
+let myId: MateId | null = null;
 let myCwd = process.cwd();
 let myGitRoot: string | null = null;
 
 // --- MCP Server ---
 
 const mcp = new Server(
-  { name: "claude-peers", version: "0.1.0" },
+  { name: "cc-mate", version: "0.1.0" },
   {
     capabilities: {
       experimental: { "claude/channel": {} },
       tools: {},
     },
-    instructions: `You are connected to the claude-peers network. Other Claude Code instances on this machine can see you and send you messages.
+    instructions: `You are connected to the cc-mate network. Other Claude Code instances on this machine can see you and send you messages.
 
-IMPORTANT: When you receive a <channel source="claude-peers" ...> message, RESPOND IMMEDIATELY. Do not wait until your current task is finished. Pause what you are doing, reply to the message using send_message, then resume your work. Treat incoming peer messages like a coworker tapping you on the shoulder — answer right away, even if you're in the middle of something.
+IMPORTANT: When you receive a <channel source="cc-mate" ...> message, RESPOND IMMEDIATELY. Do not wait until your current task is finished. Pause what you are doing, reply to the message using send_message, then resume your work. Treat incoming mate messages like a coworker tapping you on the shoulder — answer right away, even if you're in the middle of something.
 
 Read the from_id, from_summary, and from_cwd attributes to understand who sent the message. Reply by calling send_message with their from_id.
 
 Available tools:
-- list_peers: Discover other Claude Code instances (scope: machine/directory/repo)
+- list_mates: Discover other Claude Code instances (scope: machine/directory/repo)
 - send_message: Send a message to another instance by ID
-- set_summary: Set a 1-2 sentence summary of what you're working on (visible to other peers)
+- set_summary: Set a 1-2 sentence summary of what you're working on (visible to other mates)
 - check_messages: Manually check for new messages
 
 When you start, proactively call set_summary to describe what you're working on. This helps other instances understand your context.`,
@@ -168,7 +168,7 @@ When you start, proactively call set_summary to describe what you're working on.
 
 const TOOLS = [
   {
-    name: "list_peers",
+    name: "list_mates",
     description:
       "List other Claude Code instances running on this machine. Returns their ID, working directory, git repo, and summary.",
     inputSchema: {
@@ -178,7 +178,7 @@ const TOOLS = [
           type: "string" as const,
           enum: ["machine", "directory", "repo"],
           description:
-            'Scope of peer discovery. "machine" = all instances on this computer. "directory" = same working directory. "repo" = same git repository (including worktrees or subdirectories).',
+            'Scope of mate discovery. "machine" = all instances on this computer. "directory" = same working directory. "repo" = same git repository (including worktrees or subdirectories).',
         },
       },
       required: ["scope"],
@@ -187,13 +187,13 @@ const TOOLS = [
   {
     name: "send_message",
     description:
-      "Send a message to another Claude Code instance by peer ID. The message will be pushed into their session immediately via channel notification.",
+      "Send a message to another Claude Code instance by mate ID. The message will be pushed into their session immediately via channel notification.",
     inputSchema: {
       type: "object" as const,
       properties: {
         to_id: {
           type: "string" as const,
-          description: "The peer ID of the target Claude Code instance (from list_peers)",
+          description: "The mate ID of the target Claude Code instance (from list_mates)",
         },
         message: {
           type: "string" as const,
@@ -206,7 +206,7 @@ const TOOLS = [
   {
     name: "set_summary",
     description:
-      "Set a brief summary (1-2 sentences) of what you are currently working on. This is visible to other Claude Code instances when they list peers.",
+      "Set a brief summary (1-2 sentences) of what you are currently working on. This is visible to other Claude Code instances when they list mates.",
     inputSchema: {
       type: "object" as const,
       properties: {
@@ -239,17 +239,17 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
   const { name, arguments: args } = req.params;
 
   switch (name) {
-    case "list_peers": {
+    case "list_mates": {
       const scope = (args as { scope: string }).scope as "machine" | "directory" | "repo";
       try {
-        const peers = await brokerFetch<Peer[]>("/list-peers", {
+        const mates = await brokerFetch<Mate[]>("/list-mates", {
           scope,
           cwd: myCwd,
           git_root: myGitRoot,
           exclude_id: myId,
         });
 
-        if (peers.length === 0) {
+        if (mates.length === 0) {
           return {
             content: [
               {
@@ -260,7 +260,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
           };
         }
 
-        const lines = peers.map((p) => {
+        const lines = mates.map((p) => {
           const parts = [
             `ID: ${p.id}`,
             `PID: ${p.pid}`,
@@ -277,7 +277,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
           content: [
             {
               type: "text" as const,
-              text: `Found ${peers.length} peer(s) (scope: ${scope}):\n\n${lines.join("\n\n")}`,
+              text: `Found ${mates.length} mate(s) (scope: ${scope}):\n\n${lines.join("\n\n")}`,
             },
           ],
         };
@@ -286,7 +286,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
           content: [
             {
               type: "text" as const,
-              text: `Error listing peers: ${e instanceof Error ? e.message : String(e)}`,
+              text: `Error listing mates: ${e instanceof Error ? e.message : String(e)}`,
             },
           ],
           isError: true,
@@ -315,7 +315,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
           };
         }
         return {
-          content: [{ type: "text" as const, text: `Message sent to peer ${to_id}` }],
+          content: [{ type: "text" as const, text: `Message sent to mate ${to_id}` }],
         };
       } catch (e) {
         return {
@@ -412,12 +412,12 @@ async function pollAndPushMessages() {
       let fromSummary = "";
       let fromCwd = "";
       try {
-        const peers = await brokerFetch<Peer[]>("/list-peers", {
+        const mates = await brokerFetch<Mate[]>("/list-mates", {
           scope: "machine",
           cwd: myCwd,
           git_root: myGitRoot,
         });
-        const sender = peers.find((p) => p.id === msg.from_id);
+        const sender = mates.find((p) => p.id === msg.from_id);
         if (sender) {
           fromSummary = sender.summary;
           fromCwd = sender.cwd;
@@ -496,7 +496,7 @@ async function main() {
     summary: initialSummary,
   });
   myId = reg.id;
-  log(`Registered as peer ${myId}`);
+  log(`Registered as mate ${myId}`);
 
   // If summary generation is still running, update it when done
   if (!initialSummary) {

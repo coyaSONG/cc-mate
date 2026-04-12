@@ -1,7 +1,7 @@
 /**
- * claude-peers
+ * cc-mate
  *
- * Peer discovery and messaging for Claude Code instances.
+ * Mate discovery and messaging for Claude Code instances.
  *
  * This package has two entry points:
  *   - server.ts  — MCP server (spawned by Claude Code, one per instance)

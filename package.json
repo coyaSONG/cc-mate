@@ -1,7 +1,7 @@
 {
-  "name": "claude-peers",
+  "name": "cc-mate",
   "version": "0.1.0",
-  "description": "Peer discovery and messaging for Claude Code instances",
+  "description": "Mate discovery and messaging for Claude Code instances",
   "module": "index.ts",
   "type": "module",
   "private": true,

@@ -1,8 +1,8 @@
 // Unique ID for each Claude Code instance (generated on registration)
-export type PeerId = string;
+export type MateId = string;
 
-export interface Peer {
-  id: PeerId;
+export interface Mate {
+  id: MateId;
   pid: number;
   cwd: string;
   git_root: string | null;
@@ -14,8 +14,8 @@ export interface Peer {
 
 export interface Message {
   id: number;
-  from_id: PeerId;
-  to_id: PeerId;
+  from_id: MateId;
+  to_id: MateId;
   text: string;
   sent_at: string; // ISO timestamp
   delivered: boolean;
@@ -33,34 +33,34 @@ export interface RegisterRequest {
 }
 
 export interface RegisterResponse {
-  id: PeerId;
+  id: MateId;
 }
 
 export interface HeartbeatRequest {
-  id: PeerId;
+  id: MateId;
 }
 
 export interface SetSummaryRequest {
-  id: PeerId;
+  id: MateId;
   summary: string;
 }
 
-export interface ListPeersRequest {
+export interface ListMatesRequest {
   scope: "machine" | "directory" | "repo";
-  // The requesting peer's context (used for filtering)
+  // The requesting mate's context (used for filtering)
   cwd: string;
   git_root: string | null;
-  exclude_id?: PeerId;
+  exclude_id?: MateId;
 }
 
 export interface SendMessageRequest {
-  from_id: PeerId;
-  to_id: PeerId;
+  from_id: MateId;
+  to_id: MateId;
   text: string;
 }
 
 export interface PollMessagesRequest {
-  id: PeerId;
+  id: MateId;
 }
 
 export interface PollMessagesResponse {
@@ -86,8 +86,8 @@ export const TERMINAL_STATUSES: readonly TaskStatus[] = [
 
 export interface Task {
   id: string;
-  orchestrator_id: PeerId;
-  worker_id: PeerId;
+  orchestrator_id: MateId;
+  worker_id: MateId;
   title: string;
   description: string;
   status: TaskStatus;
@@ -116,8 +116,8 @@ export interface TaskEvent {
 }
 
 export interface CreateTaskRequest {
-  orchestrator_id: PeerId;
-  to_id: PeerId;
+  orchestrator_id: MateId;
+  to_id: MateId;
   title: string;
   description: string;
   assigned_timeout_seconds?: number;
@@ -132,14 +132,14 @@ export interface CreateTaskResponse {
 }
 
 export interface ListTasksRequest {
-  caller_id: PeerId;
+  caller_id: MateId;
   role: "orchestrator" | "worker" | "both";
   status?: TaskStatus;
   include_terminal?: boolean;
 }
 
 export interface GetTaskRequest {
-  caller_id: PeerId;
+  caller_id: MateId;
   task_id: string;
 }
 
@@ -149,7 +149,7 @@ export interface GetTaskResponse {
 }
 
 export interface TaskTransitionRequest {
-  caller_id: PeerId;
+  caller_id: MateId;
   task_id: string;
 }
 

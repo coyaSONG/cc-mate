@@ -4,13 +4,13 @@ globs: "*.ts, *.tsx, *.html, *.css, *.js, *.jsx, package.json"
 alwaysApply: false
 ---
 
-# claude-peers
+# cc-mate
 
-Peer discovery and messaging MCP channel for Claude Code instances.
+Mate discovery and messaging MCP channel for Claude Code instances.
 
 ## Architecture
 
-- `broker.ts` — Singleton HTTP daemon on localhost:7899 + SQLite. Auto-launched by the MCP server.
+- `broker.ts` — Singleton HTTP daemon on localhost:7349 + SQLite. Auto-launched by the MCP server.
 - `server.ts` — MCP stdio server, one per Claude Code instance. Connects to broker, exposes tools, pushes channel notifications.
 - `shared/types.ts` — Shared TypeScript types for broker API.
 - `shared/summarize.ts` — Auto-summary generation via gpt-5.4-nano.
@@ -20,15 +20,15 @@ Peer discovery and messaging MCP channel for Claude Code instances.
 
 ```bash
 # Start Claude Code with the channel:
-claude --dangerously-load-development-channels server:claude-peers
+claude --dangerously-load-development-channels server:cc-mate
 
 # Or just add to .mcp.json and use as regular MCP (no channel push, but tools work):
-# { "claude-peers": { "command": "bun", "args": ["./server.ts"] } }
+# { "cc-mate": { "command": "bun", "args": ["./server.ts"] } }
 
 # CLI:
 bun cli.ts status
-bun cli.ts peers
-bun cli.ts send <peer-id> <message>
+bun cli.ts mates
+bun cli.ts send <mate-id> <message>
 bun cli.ts kill-broker
 ```
 
