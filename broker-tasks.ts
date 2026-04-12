@@ -341,6 +341,11 @@ export function setupTaskEngine(db: Database): TaskEngine {
   ): GetTaskResponse | { error: string; status_code: number } {
     const task = selectTask.get(body.task_id);
     if (!task) return { error: "task not found", status_code: 404 };
+
+    if (task.orchestrator_id !== body.caller_id && task.worker_id !== body.caller_id) {
+      return { error: "not authorized", status_code: 403 };
+    }
+
     const events = selectTaskEvents.all(body.task_id) as TaskEvent[];
     return { task, events };
   }

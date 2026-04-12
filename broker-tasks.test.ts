@@ -732,6 +732,19 @@ describe("handleGetTask", () => {
     const result = engine.handleGetTask({ caller_id: "work1", task_id: "t_nonexist" });
     expect("error" in result).toBe(true);
   });
+
+  test("returns 403 for uninvolved mate", () => {
+    const created = engine.handleCreateTask({
+      orchestrator_id: "orch1", to_id: "work1", title: "T", description: "D",
+    });
+    if (!("task_id" in created)) throw new Error("create failed");
+
+    // Add a third mate
+    insertMate(db, "other1");
+    const result = engine.handleGetTask({ caller_id: "other1", task_id: created.task_id });
+    expect("error" in result).toBe(true);
+    if ("error" in result) expect(result.status_code).toBe(403);
+  });
 });
 
 describe("checkTaskTimeouts", () => {
