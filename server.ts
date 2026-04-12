@@ -47,16 +47,42 @@ const BROKER_SCRIPT = new URL("./broker.ts", import.meta.url).pathname;
 // --- Broker communication ---
 
 async function brokerFetch<T>(path: string, body: unknown): Promise<T> {
-  const res = await fetch(`${BROKER_URL}${path}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  if (!res.ok) {
-    const err = await res.text();
-    throw new Error(`Broker error (${path}): ${res.status} ${err}`);
+  const isCreate = path === "/create-task";
+  const maxRetries = isCreate ? 0 : 2;
+
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      const res = await fetch(`${BROKER_URL}${path}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(5000),
+      });
+
+      if (!res.ok) {
+        const err = await res.text();
+        if (res.status >= 400 && res.status < 500) {
+          throw new Error(`Broker error (${path}): ${res.status} ${err}`);
+        }
+        if (attempt < maxRetries) {
+          await new Promise((r) => setTimeout(r, 1000));
+          continue;
+        }
+        throw new Error(`Broker error (${path}): ${res.status} ${err}`);
+      }
+
+      return res.json() as Promise<T>;
+    } catch (e) {
+      if (e instanceof Error && e.message.startsWith("Broker error")) throw e;
+      if (attempt < maxRetries) {
+        await new Promise((r) => setTimeout(r, 1000 * (attempt + 1)));
+        continue;
+      }
+      throw e;
+    }
   }
-  return res.json() as Promise<T>;
+
+  throw new Error(`Broker fetch failed after retries: ${path}`);
 }
 
 async function isBrokerAlive(): Promise<boolean> {
@@ -638,42 +664,53 @@ async function pollAndPushMessages() {
     const result = await brokerFetch<PollMessagesResponse>("/poll-messages", { id: myId });
 
     for (const msg of result.messages) {
-      // Look up the sender's info for context
+      const taskMeta = msg.meta ? JSON.parse(msg.meta) as {
+        task_id: string; event_type: string; to_status: string;
+      } : null;
+
       let fromSummary = "";
       let fromCwd = "";
-      try {
-        const mates = await brokerFetch<Mate[]>("/list-mates", {
-          scope: "machine",
-          cwd: myCwd,
-          git_root: myGitRoot,
-        });
-        const sender = mates.find((p) => p.id === msg.from_id);
-        if (sender) {
-          fromSummary = sender.summary;
-          fromCwd = sender.cwd;
+      if (msg.from_id !== "broker") {
+        try {
+          const mates = await brokerFetch<Mate[]>("/list-mates", {
+            scope: "machine", cwd: myCwd, git_root: myGitRoot,
+          });
+          const sender = mates.find((p) => p.id === msg.from_id);
+          if (sender) {
+            fromSummary = sender.summary;
+            fromCwd = sender.cwd;
+          }
+        } catch {
+          // Non-critical
         }
-      } catch {
-        // Non-critical, proceed without sender info
       }
 
-      // Push as channel notification — this is what makes it immediate
+      const meta: Record<string, string> = {
+        from_id: msg.from_id,
+        from_summary: fromSummary,
+        from_cwd: fromCwd,
+        sent_at: msg.sent_at,
+      };
+
+      if (taskMeta) {
+        meta.kind = "task_event";
+        meta.task_id = taskMeta.task_id;
+        meta.event_type = taskMeta.event_type;
+        meta.to_status = taskMeta.to_status;
+      }
+
       await mcp.notification({
         method: "notifications/claude/channel",
-        params: {
-          content: msg.text,
-          meta: {
-            from_id: msg.from_id,
-            from_summary: fromSummary,
-            from_cwd: fromCwd,
-            sent_at: msg.sent_at,
-          },
-        },
+        params: { content: msg.text, meta },
       });
 
-      log(`Pushed message from ${msg.from_id}: ${msg.text.slice(0, 80)}`);
+      log(
+        taskMeta
+          ? `Pushed task event [${taskMeta.event_type}] for ${taskMeta.task_id}`
+          : `Pushed message from ${msg.from_id}: ${msg.text.slice(0, 80)}`
+      );
     }
   } catch (e) {
-    // Broker might be down temporarily, don't crash
     log(`Poll error: ${e instanceof Error ? e.message : String(e)}`);
   }
 }
