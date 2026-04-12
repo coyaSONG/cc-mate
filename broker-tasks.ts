@@ -208,7 +208,7 @@ export function setupTaskEngine(db: Database): TaskEngine {
 
     // Execute in a single transaction
     const txn = db.transaction(() => {
-      db.run(updateSql, updateParams);
+      db.run(updateSql, updateParams as import("bun:sqlite").SQLQueryBindings[]);
       insertTaskEvent.run(task.id, eventType, actorId, fromStatus, toStatus, payloadJson, now);
       insertTaskMessage.run(actorId, opts.notifyToId, opts.notifyText, now, meta);
     });
