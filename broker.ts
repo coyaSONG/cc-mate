@@ -266,16 +266,16 @@ Bun.serve({
           handleUnregister(body as { id: string });
           return Response.json({ ok: true });
         case "/create-task": {
-          const result = taskEngine.handleCreateTask(body);
+          const result = taskEngine.handleCreateTask(body as import("./shared/types.ts").CreateTaskRequest);
           if ("error" in result) {
             return Response.json({ error: result.error }, { status: result.status_code });
           }
           return Response.json(result);
         }
         case "/list-tasks":
-          return Response.json(taskEngine.handleListTasks(body));
+          return Response.json(taskEngine.handleListTasks(body as import("./shared/types.ts").ListTasksRequest));
         case "/get-task": {
-          const result = taskEngine.handleGetTask(body);
+          const result = taskEngine.handleGetTask(body as import("./shared/types.ts").GetTaskRequest);
           if ("error" in result) {
             return Response.json({ error: result.error }, { status: result.status_code });
           }
@@ -299,7 +299,7 @@ Bun.serve({
             "/resume-task": taskEngine.handleResumeTask,
             "/cancel-task": taskEngine.handleCancelTask,
           };
-          const handler = handlers[path];
+          const handler = handlers[path]!;
           const result = handler(body);
           if (!result.ok) {
             return Response.json({ error: result.error }, { status: result.status_code ?? 500 });

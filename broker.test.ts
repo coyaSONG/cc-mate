@@ -157,8 +157,8 @@ describe("send-message & poll-messages", () => {
       // Poll — should get the message
       const poll1 = await post("/poll-messages", { id: receiver }) as { messages: Array<{ from_id: string; text: string }> };
       expect(poll1.messages).toHaveLength(1);
-      expect(poll1.messages[0].from_id).toBe(sender);
-      expect(poll1.messages[0].text).toBe("hello mate!");
+      expect(poll1.messages[0]!.from_id).toBe(sender);
+      expect(poll1.messages[0]!.text).toBe("hello mate!");
 
       // Poll again — already delivered, should be empty
       const poll2 = await post("/poll-messages", { id: receiver }) as { messages: unknown[] };
