@@ -264,3 +264,112 @@ describe("handleCreateTask", () => {
     expect((result as { error: string; status_code: number }).status_code).toBe(404);
   });
 });
+
+describe("handleAcceptAssignment", () => {
+  let db: Database;
+
+  beforeEach(() => {
+    db = createTestDb();
+    insertMate(db, "orch_01");
+    insertMate(db, "work_01");
+  });
+
+  function createAssignedTask(engine: ReturnType<typeof setupTaskEngine>) {
+    const result = engine.handleCreateTask({
+      orchestrator_id: "orch_01",
+      to_id: "work_01",
+      title: "Test Task",
+      description: "Do the thing",
+    });
+    if ("error" in result) throw new Error(`Unexpected error: ${result.error}`);
+    return result.task_id;
+  }
+
+  test("assigned → in_progress", () => {
+    const engine = setupTaskEngine(db);
+    const taskId = createAssignedTask(engine);
+    const result = engine.handleAcceptAssignment({ caller_id: "work_01", task_id: taskId });
+    expect(result.ok).toBe(true);
+    expect(result.task?.status).toBe("in_progress");
+  });
+
+  test("rejects non-worker with 403", () => {
+    const engine = setupTaskEngine(db);
+    const taskId = createAssignedTask(engine);
+    const result = engine.handleAcceptAssignment({ caller_id: "orch_01", task_id: taskId });
+    expect(result.ok).toBe(false);
+    expect(result.status_code).toBe(403);
+  });
+
+  test("idempotent: already in_progress returns already_done", () => {
+    const engine = setupTaskEngine(db);
+    const taskId = createAssignedTask(engine);
+    engine.handleAcceptAssignment({ caller_id: "work_01", task_id: taskId });
+    const result = engine.handleAcceptAssignment({ caller_id: "work_01", task_id: taskId });
+    expect(result.ok).toBe(true);
+    expect(result.already_done).toBe(true);
+  });
+
+  test("sends notification to orchestrator", () => {
+    const engine = setupTaskEngine(db);
+    const taskId = createAssignedTask(engine);
+    // clear messages first
+    db.run(`DELETE FROM messages WHERE to_id = 'orch_01'`);
+    engine.handleAcceptAssignment({ caller_id: "work_01", task_id: taskId });
+    const msg = db.query(`SELECT * FROM messages WHERE to_id = 'orch_01'`).get() as { text: string } | null;
+    expect(msg).not.toBeNull();
+    expect(msg!.text).toContain("accepted");
+  });
+});
+
+describe("handleDeclineAssignment", () => {
+  let db: Database;
+
+  beforeEach(() => {
+    db = createTestDb();
+    insertMate(db, "orch_01");
+    insertMate(db, "work_01");
+  });
+
+  function createAssignedTask(engine: ReturnType<typeof setupTaskEngine>) {
+    const result = engine.handleCreateTask({
+      orchestrator_id: "orch_01",
+      to_id: "work_01",
+      title: "Test Task",
+      description: "Do the thing",
+    });
+    if ("error" in result) throw new Error(`Unexpected error: ${result.error}`);
+    return result.task_id;
+  }
+
+  test("assigned → declined with reason stored", () => {
+    const engine = setupTaskEngine(db);
+    const taskId = createAssignedTask(engine);
+    const result = engine.handleDeclineAssignment({ caller_id: "work_01", task_id: taskId, reason: "Too busy" });
+    expect(result.ok).toBe(true);
+    expect(result.task?.status).toBe("declined");
+    expect(result.task?.decline_reason).toBe("Too busy");
+  });
+
+  test("rejects transition from non-assigned state with 409", () => {
+    const engine = setupTaskEngine(db);
+    const taskId = createAssignedTask(engine);
+    engine.handleAcceptAssignment({ caller_id: "work_01", task_id: taskId });
+    // now in_progress, can't decline
+    const result = engine.handleDeclineAssignment({ caller_id: "work_01", task_id: taskId, reason: "Changed mind" });
+    expect(result.ok).toBe(false);
+    expect(result.status_code).toBe(409);
+  });
+
+  test("terminal state rejects further transitions with 409", () => {
+    const engine = setupTaskEngine(db);
+    const taskId = createAssignedTask(engine);
+    engine.handleDeclineAssignment({ caller_id: "work_01", task_id: taskId, reason: "Reason A" });
+    // already declined (terminal), try again with new reason
+    const result = engine.handleDeclineAssignment({ caller_id: "work_01", task_id: taskId, reason: "Reason B" });
+    // already_done (same toStatus=declined) or 409 (not in validFrom)
+    // doTransition: status===toStatus → already_done, so ok=true already_done=true
+    expect(result.ok).toBe(true);
+    expect(result.already_done).toBe(true);
+  });
+});

@@ -324,12 +324,31 @@ export function setupTaskEngine(db: Database): TaskEngine {
     return { error: "not implemented", status_code: 501 };
   }
 
-  function handleAcceptAssignment(_body: TaskTransitionRequest): TransitionResponse {
-    return notImplemented;
+  function handleAcceptAssignment(body: TaskTransitionRequest): TransitionResponse {
+    const lookup = getTaskOrError(body.task_id);
+    if ("error" in lookup) return { ok: false, ...lookup };
+    const { task } = lookup;
+    const authErr = checkAuth(task, body.caller_id, "worker");
+    if (authErr) return { ok: false, error: authErr, status_code: 403 };
+    return doTransition(task, ["assigned"], "in_progress", body.caller_id, "accepted", {
+      notifyToId: task.orchestrator_id,
+      notifyText: `Task accepted: "${task.title}"`,
+    });
   }
 
-  function handleDeclineAssignment(_body: DeclineAssignmentRequest): TransitionResponse {
-    return notImplemented;
+  function handleDeclineAssignment(body: DeclineAssignmentRequest): TransitionResponse {
+    const lookup = getTaskOrError(body.task_id);
+    if ("error" in lookup) return { ok: false, ...lookup };
+    const { task } = lookup;
+    const authErr = checkAuth(task, body.caller_id, "worker");
+    if (authErr) return { ok: false, error: authErr, status_code: 403 };
+    return doTransition(task, ["assigned"], "declined", body.caller_id, "declined", {
+      additionalSql: "decline_reason = ?",
+      additionalParams: [body.reason],
+      eventPayload: { reason: body.reason },
+      notifyToId: task.orchestrator_id,
+      notifyText: `Task declined: "${task.title}" — ${body.reason}`,
+    });
   }
 
   function handleReportResult(_body: ReportResultRequest): TransitionResponse {
