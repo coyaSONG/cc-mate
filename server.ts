@@ -661,6 +661,19 @@ async function pollAndPushMessages() {
 
   try {
     const result = await brokerFetch<PollMessagesResponse>("/poll-messages", { id: myId });
+    if (result.messages.length === 0) return;
+
+    // Fetch mate list once for the entire batch
+    let matesList: Mate[] = [];
+    try {
+      matesList = await brokerFetch<Mate[]>("/list-mates", {
+        scope: "machine",
+        cwd: myCwd,
+        git_root: myGitRoot,
+      });
+    } catch {
+      // Non-critical, proceed without sender info
+    }
 
     for (const msg of result.messages) {
       const taskMeta = msg.meta ? JSON.parse(msg.meta) as {
@@ -670,17 +683,10 @@ async function pollAndPushMessages() {
       let fromSummary = "";
       let fromCwd = "";
       if (msg.from_id !== "broker") {
-        try {
-          const mates = await brokerFetch<Mate[]>("/list-mates", {
-            scope: "machine", cwd: myCwd, git_root: myGitRoot,
-          });
-          const sender = mates.find((p) => p.id === msg.from_id);
-          if (sender) {
-            fromSummary = sender.summary;
-            fromCwd = sender.cwd;
-          }
-        } catch {
-          // Non-critical
+        const sender = matesList.find((p) => p.id === msg.from_id);
+        if (sender) {
+          fromSummary = sender.summary;
+          fromCwd = sender.cwd;
         }
       }
 
