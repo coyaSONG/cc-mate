@@ -469,3 +469,197 @@ describe("handleReportBlocker", () => {
     expect(result.task?.blocker_reason).toBe("Need access");
   });
 });
+
+describe("handleAcceptResult", () => {
+  let db: Database;
+
+  beforeEach(() => {
+    db = createTestDb();
+    insertMate(db, "orch_01");
+    insertMate(db, "work_01");
+  });
+
+  function createAwaitingReviewTask(engine: ReturnType<typeof setupTaskEngine>) {
+    const result = engine.handleCreateTask({
+      orchestrator_id: "orch_01",
+      to_id: "work_01",
+      title: "Test Task",
+      description: "Do the thing",
+    });
+    if ("error" in result) throw new Error(`Unexpected error: ${result.error}`);
+    engine.handleAcceptAssignment({ caller_id: "work_01", task_id: result.task_id });
+    engine.handleReportResult({ caller_id: "work_01", task_id: result.task_id, result_text: "Done!" });
+    return result.task_id;
+  }
+
+  test("awaiting_review → completed", () => {
+    const engine = setupTaskEngine(db);
+    const taskId = createAwaitingReviewTask(engine);
+    const result = engine.handleAcceptResult({ caller_id: "orch_01", task_id: taskId });
+    expect(result.ok).toBe(true);
+    expect(result.task?.status).toBe("completed");
+  });
+
+  test("terminal completed rejects cancel with 409", () => {
+    const engine = setupTaskEngine(db);
+    const taskId = createAwaitingReviewTask(engine);
+    engine.handleAcceptResult({ caller_id: "orch_01", task_id: taskId });
+    const result = engine.handleCancelTask({ caller_id: "orch_01", task_id: taskId });
+    expect(result.ok).toBe(false);
+    expect(result.status_code).toBe(409);
+  });
+});
+
+describe("handleRejectResult", () => {
+  let db: Database;
+
+  beforeEach(() => {
+    db = createTestDb();
+    insertMate(db, "orch_01");
+    insertMate(db, "work_01");
+  });
+
+  function createAwaitingReviewTask(engine: ReturnType<typeof setupTaskEngine>) {
+    const result = engine.handleCreateTask({
+      orchestrator_id: "orch_01",
+      to_id: "work_01",
+      title: "Test Task",
+      description: "Do the thing",
+      progress_timeout_seconds: 3600,
+    });
+    if ("error" in result) throw new Error(`Unexpected error: ${result.error}`);
+    engine.handleAcceptAssignment({ caller_id: "work_01", task_id: result.task_id });
+    engine.handleReportResult({ caller_id: "work_01", task_id: result.task_id, result_text: "First attempt", artifact_paths: ["/out/f1.txt"] });
+    return result.task_id;
+  }
+
+  test("awaiting_review → in_progress with feedback stored", () => {
+    const engine = setupTaskEngine(db);
+    const taskId = createAwaitingReviewTask(engine);
+    const result = engine.handleRejectResult({ caller_id: "orch_01", task_id: taskId, feedback: "Needs more detail" });
+    expect(result.ok).toBe(true);
+    expect(result.task?.status).toBe("in_progress");
+    expect(result.task?.reject_feedback).toBe("Needs more detail");
+  });
+
+  test("clears result_text and artifact_paths on rejection", () => {
+    const engine = setupTaskEngine(db);
+    const taskId = createAwaitingReviewTask(engine);
+    engine.handleRejectResult({ caller_id: "orch_01", task_id: taskId, feedback: "Redo it" });
+    const task = db.query(`SELECT result_text, artifact_paths FROM tasks WHERE id = ?`).get(taskId) as { result_text: string | null; artifact_paths: string | null };
+    expect(task.result_text).toBeNull();
+    expect(task.artifact_paths).toBeNull();
+  });
+
+  test("resets progress_deadline on rejection", () => {
+    const engine = setupTaskEngine(db);
+    const taskId = createAwaitingReviewTask(engine);
+    const before = Date.now();
+    engine.handleRejectResult({ caller_id: "orch_01", task_id: taskId, feedback: "Redo it" });
+    const task = db.query(`SELECT progress_deadline FROM tasks WHERE id = ?`).get(taskId) as { progress_deadline: string };
+    const deadline = new Date(task.progress_deadline).getTime();
+    // Should be ~3600s from now
+    expect(deadline).toBeGreaterThanOrEqual(before + 3_599_000);
+  });
+});
+
+describe("handleResumeTask", () => {
+  let db: Database;
+
+  beforeEach(() => {
+    db = createTestDb();
+    insertMate(db, "orch_01");
+    insertMate(db, "work_01");
+  });
+
+  function createBlockedTask(engine: ReturnType<typeof setupTaskEngine>) {
+    const result = engine.handleCreateTask({
+      orchestrator_id: "orch_01",
+      to_id: "work_01",
+      title: "Test Task",
+      description: "Do the thing",
+    });
+    if ("error" in result) throw new Error(`Unexpected error: ${result.error}`);
+    engine.handleAcceptAssignment({ caller_id: "work_01", task_id: result.task_id });
+    engine.handleReportBlocker({ caller_id: "work_01", task_id: result.task_id, reason: "Waiting on infra" });
+    return result.task_id;
+  }
+
+  test("blocked → in_progress", () => {
+    const engine = setupTaskEngine(db);
+    const taskId = createBlockedTask(engine);
+    const result = engine.handleResumeTask({ caller_id: "orch_01", task_id: taskId });
+    expect(result.ok).toBe(true);
+    expect(result.task?.status).toBe("in_progress");
+  });
+
+  test("records note in event payload", () => {
+    const engine = setupTaskEngine(db);
+    const taskId = createBlockedTask(engine);
+    engine.handleResumeTask({ caller_id: "orch_01", task_id: taskId, note: "Access granted" });
+    const event = db.query(`SELECT payload FROM task_events WHERE task_id = ? AND event_type = 'resumed'`).get(taskId) as { payload: string } | null;
+    expect(event).not.toBeNull();
+    expect(JSON.parse(event!.payload)).toEqual({ note: "Access granted" });
+  });
+});
+
+describe("handleCancelTask", () => {
+  let db: Database;
+
+  beforeEach(() => {
+    db = createTestDb();
+    insertMate(db, "orch_01");
+    insertMate(db, "work_01");
+  });
+
+  test("cancels from assigned state", () => {
+    const engine = setupTaskEngine(db);
+    const result = engine.handleCreateTask({ orchestrator_id: "orch_01", to_id: "work_01", title: "T", description: "D" });
+    if ("error" in result) throw new Error();
+    const r = engine.handleCancelTask({ caller_id: "orch_01", task_id: result.task_id });
+    expect(r.ok).toBe(true);
+    expect(r.task?.status).toBe("cancelled");
+  });
+
+  test("cancels from in_progress state", () => {
+    const engine = setupTaskEngine(db);
+    const result = engine.handleCreateTask({ orchestrator_id: "orch_01", to_id: "work_01", title: "T", description: "D" });
+    if ("error" in result) throw new Error();
+    engine.handleAcceptAssignment({ caller_id: "work_01", task_id: result.task_id });
+    const r = engine.handleCancelTask({ caller_id: "orch_01", task_id: result.task_id });
+    expect(r.ok).toBe(true);
+    expect(r.task?.status).toBe("cancelled");
+  });
+
+  test("cancels from blocked state", () => {
+    const engine = setupTaskEngine(db);
+    const result = engine.handleCreateTask({ orchestrator_id: "orch_01", to_id: "work_01", title: "T", description: "D" });
+    if ("error" in result) throw new Error();
+    engine.handleAcceptAssignment({ caller_id: "work_01", task_id: result.task_id });
+    engine.handleReportBlocker({ caller_id: "work_01", task_id: result.task_id, reason: "stuck" });
+    const r = engine.handleCancelTask({ caller_id: "orch_01", task_id: result.task_id });
+    expect(r.ok).toBe(true);
+    expect(r.task?.status).toBe("cancelled");
+  });
+
+  test("rejects cancel from completed state with 409", () => {
+    const engine = setupTaskEngine(db);
+    const result = engine.handleCreateTask({ orchestrator_id: "orch_01", to_id: "work_01", title: "T", description: "D" });
+    if ("error" in result) throw new Error();
+    engine.handleAcceptAssignment({ caller_id: "work_01", task_id: result.task_id });
+    engine.handleReportResult({ caller_id: "work_01", task_id: result.task_id, result_text: "Done" });
+    engine.handleAcceptResult({ caller_id: "orch_01", task_id: result.task_id });
+    const r = engine.handleCancelTask({ caller_id: "orch_01", task_id: result.task_id });
+    expect(r.ok).toBe(false);
+    expect(r.status_code).toBe(409);
+  });
+
+  test("only orchestrator can cancel — worker gets 403", () => {
+    const engine = setupTaskEngine(db);
+    const result = engine.handleCreateTask({ orchestrator_id: "orch_01", to_id: "work_01", title: "T", description: "D" });
+    if ("error" in result) throw new Error();
+    const r = engine.handleCancelTask({ caller_id: "work_01", task_id: result.task_id });
+    expect(r.ok).toBe(false);
+    expect(r.status_code).toBe(403);
+  });
+});

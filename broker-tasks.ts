@@ -381,20 +381,61 @@ export function setupTaskEngine(db: Database): TaskEngine {
     });
   }
 
-  function handleAcceptResult(_body: TaskTransitionRequest): TransitionResponse {
-    return notImplemented;
+  function handleAcceptResult(body: TaskTransitionRequest): TransitionResponse {
+    const lookup = getTaskOrError(body.task_id);
+    if ("error" in lookup) return { ok: false, ...lookup };
+    const { task } = lookup;
+    const authErr = checkAuth(task, body.caller_id, "orchestrator");
+    if (authErr) return { ok: false, error: authErr, status_code: 403 };
+    return doTransition(task, ["awaiting_review"], "completed", body.caller_id, "result_accepted", {
+      notifyToId: task.worker_id,
+      notifyText: `Task completed: "${task.title}"`,
+    });
   }
 
-  function handleRejectResult(_body: RejectResultRequest): TransitionResponse {
-    return notImplemented;
+  function handleRejectResult(body: RejectResultRequest): TransitionResponse {
+    const lookup = getTaskOrError(body.task_id);
+    if ("error" in lookup) return { ok: false, ...lookup };
+    const { task } = lookup;
+    const authErr = checkAuth(task, body.caller_id, "orchestrator");
+    if (authErr) return { ok: false, error: authErr, status_code: 403 };
+    const newDeadline = new Date(Date.now() + task.progress_timeout_seconds * 1000).toISOString();
+    return doTransition(task, ["awaiting_review"], "in_progress", body.caller_id, "result_rejected", {
+      additionalSql: "reject_feedback = ?, result_text = NULL, artifact_paths = NULL, progress_deadline = ?",
+      additionalParams: [body.feedback, newDeadline],
+      eventPayload: { feedback: body.feedback },
+      notifyToId: task.worker_id,
+      notifyText: `Result rejected for task "${task.title}": ${body.feedback}`,
+    });
   }
 
-  function handleResumeTask(_body: ResumeTaskRequest): TransitionResponse {
-    return notImplemented;
+  function handleResumeTask(body: ResumeTaskRequest): TransitionResponse {
+    const lookup = getTaskOrError(body.task_id);
+    if ("error" in lookup) return { ok: false, ...lookup };
+    const { task } = lookup;
+    const authErr = checkAuth(task, body.caller_id, "orchestrator");
+    if (authErr) return { ok: false, error: authErr, status_code: 403 };
+    const newDeadline = new Date(Date.now() + task.progress_timeout_seconds * 1000).toISOString();
+    return doTransition(task, ["blocked"], "in_progress", body.caller_id, "resumed", {
+      additionalSql: "blocker_reason = NULL, progress_deadline = ?",
+      additionalParams: [newDeadline],
+      eventPayload: body.note ? { note: body.note } : undefined,
+      notifyToId: task.worker_id,
+      notifyText: body.note ? `Task resumed: "${task.title}" — ${body.note}` : `Task resumed: "${task.title}"`,
+    });
   }
 
-  function handleCancelTask(_body: TaskTransitionRequest): TransitionResponse {
-    return notImplemented;
+  function handleCancelTask(body: TaskTransitionRequest): TransitionResponse {
+    const lookup = getTaskOrError(body.task_id);
+    if ("error" in lookup) return { ok: false, ...lookup };
+    const { task } = lookup;
+    const authErr = checkAuth(task, body.caller_id, "orchestrator");
+    if (authErr) return { ok: false, error: authErr, status_code: 403 };
+    const nonTerminal: TaskStatus[] = ["assigned", "in_progress", "awaiting_review", "blocked"];
+    return doTransition(task, nonTerminal, "cancelled", body.caller_id, "cancelled", {
+      notifyToId: task.worker_id,
+      notifyText: `Task cancelled: "${task.title}"`,
+    });
   }
 
   function checkTaskTimeouts(): void {
