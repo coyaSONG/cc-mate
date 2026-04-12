@@ -373,3 +373,99 @@ describe("handleDeclineAssignment", () => {
     expect(result.already_done).toBe(true);
   });
 });
+
+describe("handleReportResult", () => {
+  let db: Database;
+
+  beforeEach(() => {
+    db = createTestDb();
+    insertMate(db, "orch_01");
+    insertMate(db, "work_01");
+  });
+
+  function createInProgressTask(engine: ReturnType<typeof setupTaskEngine>) {
+    const result = engine.handleCreateTask({
+      orchestrator_id: "orch_01",
+      to_id: "work_01",
+      title: "Test Task",
+      description: "Do the thing",
+    });
+    if ("error" in result) throw new Error(`Unexpected error: ${result.error}`);
+    engine.handleAcceptAssignment({ caller_id: "work_01", task_id: result.task_id });
+    return result.task_id;
+  }
+
+  test("in_progress → awaiting_review", () => {
+    const engine = setupTaskEngine(db);
+    const taskId = createInProgressTask(engine);
+    const result = engine.handleReportResult({ caller_id: "work_01", task_id: taskId, result_text: "Done!" });
+    expect(result.ok).toBe(true);
+    expect(result.task?.status).toBe("awaiting_review");
+  });
+
+  test("stores result_text", () => {
+    const engine = setupTaskEngine(db);
+    const taskId = createInProgressTask(engine);
+    engine.handleReportResult({ caller_id: "work_01", task_id: taskId, result_text: "My result" });
+    const task = db.query(`SELECT result_text FROM tasks WHERE id = ?`).get(taskId) as { result_text: string };
+    expect(task.result_text).toBe("My result");
+  });
+
+  test("stores artifact_paths as JSON", () => {
+    const engine = setupTaskEngine(db);
+    const taskId = createInProgressTask(engine);
+    engine.handleReportResult({
+      caller_id: "work_01",
+      task_id: taskId,
+      result_text: "Done",
+      artifact_paths: ["/out/file1.txt", "/out/file2.txt"],
+    });
+    const task = db.query(`SELECT artifact_paths FROM tasks WHERE id = ?`).get(taskId) as { artifact_paths: string };
+    expect(JSON.parse(task.artifact_paths)).toEqual(["/out/file1.txt", "/out/file2.txt"]);
+  });
+
+  test("rejects from assigned state with 409", () => {
+    const engine = setupTaskEngine(db);
+    const result = engine.handleCreateTask({
+      orchestrator_id: "orch_01",
+      to_id: "work_01",
+      title: "Test Task",
+      description: "Do the thing",
+    });
+    if ("error" in result) throw new Error(`Unexpected error: ${result.error}`);
+    const r = engine.handleReportResult({ caller_id: "work_01", task_id: result.task_id, result_text: "Too soon" });
+    expect(r.ok).toBe(false);
+    expect(r.status_code).toBe(409);
+  });
+});
+
+describe("handleReportBlocker", () => {
+  let db: Database;
+
+  beforeEach(() => {
+    db = createTestDb();
+    insertMate(db, "orch_01");
+    insertMate(db, "work_01");
+  });
+
+  function createInProgressTask(engine: ReturnType<typeof setupTaskEngine>) {
+    const result = engine.handleCreateTask({
+      orchestrator_id: "orch_01",
+      to_id: "work_01",
+      title: "Test Task",
+      description: "Do the thing",
+    });
+    if ("error" in result) throw new Error(`Unexpected error: ${result.error}`);
+    engine.handleAcceptAssignment({ caller_id: "work_01", task_id: result.task_id });
+    return result.task_id;
+  }
+
+  test("in_progress → blocked, stores blocker_reason", () => {
+    const engine = setupTaskEngine(db);
+    const taskId = createInProgressTask(engine);
+    const result = engine.handleReportBlocker({ caller_id: "work_01", task_id: taskId, reason: "Need access" });
+    expect(result.ok).toBe(true);
+    expect(result.task?.status).toBe("blocked");
+    expect(result.task?.blocker_reason).toBe("Need access");
+  });
+});

@@ -351,12 +351,34 @@ export function setupTaskEngine(db: Database): TaskEngine {
     });
   }
 
-  function handleReportResult(_body: ReportResultRequest): TransitionResponse {
-    return notImplemented;
+  function handleReportResult(body: ReportResultRequest): TransitionResponse {
+    const lookup = getTaskOrError(body.task_id);
+    if ("error" in lookup) return { ok: false, ...lookup };
+    const { task } = lookup;
+    const authErr = checkAuth(task, body.caller_id, "worker");
+    if (authErr) return { ok: false, error: authErr, status_code: 403 };
+    return doTransition(task, ["in_progress"], "awaiting_review", body.caller_id, "result_reported", {
+      additionalSql: "result_text = ?, artifact_paths = ?",
+      additionalParams: [body.result_text, body.artifact_paths ? JSON.stringify(body.artifact_paths) : null],
+      eventPayload: { result_text: body.result_text },
+      notifyToId: task.orchestrator_id,
+      notifyText: `Result ready for review on task "${task.title}":\n${body.result_text}`,
+    });
   }
 
-  function handleReportBlocker(_body: ReportBlockerRequest): TransitionResponse {
-    return notImplemented;
+  function handleReportBlocker(body: ReportBlockerRequest): TransitionResponse {
+    const lookup = getTaskOrError(body.task_id);
+    if ("error" in lookup) return { ok: false, ...lookup };
+    const { task } = lookup;
+    const authErr = checkAuth(task, body.caller_id, "worker");
+    if (authErr) return { ok: false, error: authErr, status_code: 403 };
+    return doTransition(task, ["in_progress"], "blocked", body.caller_id, "blocked", {
+      additionalSql: "blocker_reason = ?",
+      additionalParams: [body.reason],
+      eventPayload: { reason: body.reason },
+      notifyToId: task.orchestrator_id,
+      notifyText: `Task blocked: "${task.title}" — ${body.reason}`,
+    });
   }
 
   function handleAcceptResult(_body: TaskTransitionRequest): TransitionResponse {
