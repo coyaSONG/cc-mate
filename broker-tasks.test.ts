@@ -663,3 +663,160 @@ describe("handleCancelTask", () => {
     expect(r.status_code).toBe(403);
   });
 });
+
+describe("handleListTasks", () => {
+  let db: Database;
+  let engine: ReturnType<typeof setupTaskEngine>;
+
+  beforeEach(() => {
+    db = createTestDb();
+    insertMate(db, "orch1");
+    insertMate(db, "work1");
+    engine = setupTaskEngine(db);
+  });
+
+  test("filters by worker role", () => {
+    engine.handleCreateTask({ orchestrator_id: "orch1", to_id: "work1", title: "A", description: "D" });
+    const tasks = engine.handleListTasks({ caller_id: "work1", role: "worker" });
+    expect(tasks.length).toBeGreaterThanOrEqual(1);
+    expect(tasks.every((t) => t.worker_id === "work1")).toBe(true);
+  });
+
+  test("filters by orchestrator role", () => {
+    engine.handleCreateTask({ orchestrator_id: "orch1", to_id: "work1", title: "A", description: "D" });
+    const tasks = engine.handleListTasks({ caller_id: "orch1", role: "orchestrator" });
+    expect(tasks.length).toBeGreaterThanOrEqual(1);
+    expect(tasks.every((t) => t.orchestrator_id === "orch1")).toBe(true);
+  });
+
+  test("excludes terminal by default", () => {
+    const created = engine.handleCreateTask({ orchestrator_id: "orch1", to_id: "work1", title: "A", description: "D" });
+    if (!("task_id" in created)) throw new Error("create failed");
+    engine.handleDeclineAssignment({ caller_id: "work1", task_id: created.task_id, reason: "no" });
+    const tasks = engine.handleListTasks({ caller_id: "work1", role: "worker" });
+    expect(tasks.every((t) => t.status !== "declined")).toBe(true);
+  });
+
+  test("includes terminal when requested", () => {
+    const created = engine.handleCreateTask({ orchestrator_id: "orch1", to_id: "work1", title: "Declined", description: "D" });
+    if (!("task_id" in created)) throw new Error("create failed");
+    engine.handleDeclineAssignment({ caller_id: "work1", task_id: created.task_id, reason: "no" });
+    const tasks = engine.handleListTasks({ caller_id: "work1", role: "worker", include_terminal: true });
+    expect(tasks.some((t) => t.status === "declined")).toBe(true);
+  });
+});
+
+describe("handleGetTask", () => {
+  let db: Database;
+  let engine: ReturnType<typeof setupTaskEngine>;
+
+  beforeEach(() => {
+    db = createTestDb();
+    insertMate(db, "orch1");
+    insertMate(db, "work1");
+    engine = setupTaskEngine(db);
+  });
+
+  test("returns task with events", () => {
+    const created = engine.handleCreateTask({ orchestrator_id: "orch1", to_id: "work1", title: "T", description: "D" });
+    if (!("task_id" in created)) throw new Error("create failed");
+    engine.handleAcceptAssignment({ caller_id: "work1", task_id: created.task_id });
+    const result = engine.handleGetTask({ caller_id: "work1", task_id: created.task_id });
+    expect("task" in result).toBe(true);
+    if (!("task" in result)) return;
+    expect(result.task.status).toBe("in_progress");
+    expect(result.events.length).toBeGreaterThanOrEqual(2);
+  });
+
+  test("returns 404 for nonexistent task", () => {
+    const result = engine.handleGetTask({ caller_id: "work1", task_id: "t_nonexist" });
+    expect("error" in result).toBe(true);
+  });
+});
+
+describe("checkTaskTimeouts", () => {
+  let db: Database;
+  let engine: ReturnType<typeof setupTaskEngine>;
+
+  beforeEach(() => {
+    db = createTestDb();
+    insertMate(db, "orch1");
+    insertMate(db, "work1");
+    engine = setupTaskEngine(db);
+  });
+
+  test("assigned timeout → blocked", () => {
+    const created = engine.handleCreateTask({
+      orchestrator_id: "orch1", to_id: "work1", title: "T", description: "D",
+      assigned_timeout_seconds: 0,
+    });
+    if (!("task_id" in created)) throw new Error("create failed");
+    engine.checkTaskTimeouts();
+    const task = db.query("SELECT * FROM tasks WHERE id = ?").get(created.task_id) as any;
+    expect(task.status).toBe("blocked");
+    expect(task.blocker_reason).toBe("assigned timeout");
+  });
+
+  test("progress timeout → blocked", () => {
+    const created = engine.handleCreateTask({
+      orchestrator_id: "orch1", to_id: "work1", title: "T", description: "D",
+      progress_timeout_seconds: 0,
+    });
+    if (!("task_id" in created)) throw new Error("create failed");
+    engine.handleAcceptAssignment({ caller_id: "work1", task_id: created.task_id });
+    engine.checkTaskTimeouts();
+    const task = db.query("SELECT * FROM tasks WHERE id = ?").get(created.task_id) as any;
+    expect(task.status).toBe("blocked");
+    expect(task.blocker_reason).toBe("progress timeout");
+  });
+
+  test("does not affect non-expired tasks", () => {
+    const created = engine.handleCreateTask({
+      orchestrator_id: "orch1", to_id: "work1", title: "T", description: "D",
+      assigned_timeout_seconds: 99999,
+    });
+    if (!("task_id" in created)) throw new Error("create failed");
+    engine.checkTaskTimeouts();
+    const task = db.query("SELECT * FROM tasks WHERE id = ?").get(created.task_id) as any;
+    expect(task.status).toBe("assigned");
+  });
+});
+
+describe("cleanStaleMateTasks", () => {
+  let db: Database;
+  let engine: ReturnType<typeof setupTaskEngine>;
+
+  beforeEach(() => {
+    db = createTestDb();
+    insertMate(db, "orch1");
+    insertMate(db, "work1");
+    engine = setupTaskEngine(db);
+  });
+
+  test("worker death → tasks blocked", () => {
+    const created = engine.handleCreateTask({ orchestrator_id: "orch1", to_id: "work1", title: "T", description: "D" });
+    if (!("task_id" in created)) throw new Error("create failed");
+    engine.handleAcceptAssignment({ caller_id: "work1", task_id: created.task_id });
+    engine.cleanStaleMateTasks("work1");
+    const task = db.query("SELECT * FROM tasks WHERE id = ?").get(created.task_id) as any;
+    expect(task.status).toBe("blocked");
+    expect(task.blocker_reason).toContain("worker disconnected");
+  });
+
+  test("orchestrator death → tasks cancelled", () => {
+    const created = engine.handleCreateTask({ orchestrator_id: "orch1", to_id: "work1", title: "T", description: "D" });
+    if (!("task_id" in created)) throw new Error("create failed");
+    engine.cleanStaleMateTasks("orch1");
+    const task = db.query("SELECT * FROM tasks WHERE id = ?").get(created.task_id) as any;
+    expect(task.status).toBe("cancelled");
+  });
+
+  test("skips terminal tasks", () => {
+    const created = engine.handleCreateTask({ orchestrator_id: "orch1", to_id: "work1", title: "T", description: "D" });
+    if (!("task_id" in created)) throw new Error("create failed");
+    engine.handleDeclineAssignment({ caller_id: "work1", task_id: created.task_id, reason: "no" });
+    engine.cleanStaleMateTasks("work1");
+    const task = db.query("SELECT * FROM tasks WHERE id = ?").get(created.task_id) as any;
+    expect(task.status).toBe("declined");
+  });
+});

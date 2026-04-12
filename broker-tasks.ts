@@ -310,18 +310,39 @@ export function setupTaskEngine(db: Database): TaskEngine {
     };
   }
 
-  // --- Stub handlers (Tasks 3-6) ---
+  function handleListTasks(body: ListTasksRequest): Task[] {
+    let sql = "SELECT * FROM tasks WHERE 1=1";
+    const params: unknown[] = [];
 
-  const notImplemented: TransitionResponse = { ok: false, error: "not implemented", status_code: 501 };
+    if (body.role === "worker") {
+      sql += " AND worker_id = ?";
+      params.push(body.caller_id);
+    } else if (body.role === "orchestrator") {
+      sql += " AND orchestrator_id = ?";
+      params.push(body.caller_id);
+    } else {
+      sql += " AND (worker_id = ? OR orchestrator_id = ?)";
+      params.push(body.caller_id, body.caller_id);
+    }
 
-  function handleListTasks(_body: ListTasksRequest): Task[] {
-    return [];
+    if (body.status) {
+      sql += " AND status = ?";
+      params.push(body.status);
+    } else if (!body.include_terminal) {
+      sql += " AND status NOT IN ('completed', 'declined', 'cancelled')";
+    }
+
+    sql += " ORDER BY created_at DESC";
+    return db.query(sql).all(...params) as Task[];
   }
 
   function handleGetTask(
-    _body: GetTaskRequest
+    body: GetTaskRequest
   ): GetTaskResponse | { error: string; status_code: number } {
-    return { error: "not implemented", status_code: 501 };
+    const task = selectTask.get(body.task_id);
+    if (!task) return { error: "task not found", status_code: 404 };
+    const events = selectTaskEvents.all(body.task_id) as TaskEvent[];
+    return { task, events };
   }
 
   function handleAcceptAssignment(body: TaskTransitionRequest): TransitionResponse {
@@ -439,11 +460,61 @@ export function setupTaskEngine(db: Database): TaskEngine {
   }
 
   function checkTaskTimeouts(): void {
-    // stub — Task 6
+    const now = new Date().toISOString();
+
+    const expiredAssigned = db
+      .query(`SELECT * FROM tasks WHERE status = 'assigned' AND assigned_deadline <= ?`)
+      .all(now) as Task[];
+
+    for (const task of expiredAssigned) {
+      doTransition(task, ["assigned"], "blocked", "broker", "timeout_assigned", {
+        additionalSql: "blocker_reason = ?",
+        additionalParams: ["assigned timeout"],
+        notifyToId: task.orchestrator_id,
+        notifyText: `Task timed out (worker did not accept): "${task.title}"`,
+      });
+    }
+
+    const expiredProgress = db
+      .query(`SELECT * FROM tasks WHERE status = 'in_progress' AND progress_deadline <= ?`)
+      .all(now) as Task[];
+
+    for (const task of expiredProgress) {
+      doTransition(task, ["in_progress"], "blocked", "broker", "timeout_progress", {
+        additionalSql: "blocker_reason = ?",
+        additionalParams: ["progress timeout"],
+        notifyToId: task.orchestrator_id,
+        notifyText: `Task timed out (no result): "${task.title}"`,
+      });
+    }
   }
 
-  function cleanStaleMateTasks(_deadMateId: string): void {
-    // stub — Task 6
+  function cleanStaleMateTasks(deadMateId: string): void {
+    // Worker tasks → blocked
+    const workerTasks = db
+      .query(`SELECT * FROM tasks WHERE worker_id = ? AND status NOT IN ('completed', 'declined', 'cancelled')`)
+      .all(deadMateId) as Task[];
+
+    for (const task of workerTasks) {
+      doTransition(task, ["assigned", "in_progress", "awaiting_review", "blocked"], "blocked", "broker", "worker_disconnected", {
+        additionalSql: "blocker_reason = ?",
+        additionalParams: ["worker disconnected (PID gone)"],
+        notifyToId: task.orchestrator_id,
+        notifyText: `Worker disconnected for task: "${task.title}"`,
+      });
+    }
+
+    // Orchestrator tasks → cancelled
+    const orchTasks = db
+      .query(`SELECT * FROM tasks WHERE orchestrator_id = ? AND status NOT IN ('completed', 'declined', 'cancelled')`)
+      .all(deadMateId) as Task[];
+
+    for (const task of orchTasks) {
+      doTransition(task, ["assigned", "in_progress", "awaiting_review", "blocked"], "cancelled", "broker", "orchestrator_disconnected", {
+        notifyToId: task.worker_id,
+        notifyText: `Task cancelled (orchestrator disconnected): "${task.title}"`,
+      });
+    }
   }
 
   return {
