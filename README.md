@@ -152,12 +152,6 @@ One Claude can assign structured tasks to another, track progress, review result
 - **MCP Server** (`server.ts`) — One per Claude Code session. Registers with broker, exposes 15 tools, pushes inbound events via [channel protocol](https://docs.anthropic.com/en/docs/claude-code/channels).
 - **Task Engine** (`broker-tasks.ts`) — State machine with race-safe transitions, idempotency guarantees, and single-transaction atomicity (state + event + notification).
 
-## Auto-Summary
-
-Set `OPENAI_API_KEY` to auto-generate a brief summary on startup via `gpt-5.4-nano` (fractions of a cent). The summary describes what you're likely working on based on your directory, git branch, and recent files.
-
-Without the API key, Claude sets its own summary via `set_summary`.
-
 ## CLI
 
 ```bash
@@ -173,7 +167,6 @@ bun cli.ts kill-broker       # stop the broker
 |----------|---------|-------------|
 | `CC_MATE_PORT` | `7349` | Broker port |
 | `CC_MATE_DB` | `~/.cc-mate.db` | SQLite database path |
-| `OPENAI_API_KEY` | — | Enables auto-summary via gpt-5.4-nano |
 
 ## Requirements
 
