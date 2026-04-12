@@ -333,7 +333,7 @@ export function setupTaskEngine(db: Database): TaskEngine {
     }
 
     sql += " ORDER BY created_at DESC";
-    return db.query(sql).all(...params) as Task[];
+    return db.query(sql).all(...(params as import("bun:sqlite").SQLQueryBindings[])) as Task[];
   }
 
   function handleGetTask(
