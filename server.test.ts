@@ -110,7 +110,7 @@ describe("server registration", () => {
 describe("list_mates", () => {
   test("returns no mates when alone", async () => {
     const result = await client.callTool({ name: "list_mates", arguments: { scope: "machine" } });
-    const text = (result.content as Array<{ type: string; text: string }>)[0].text;
+    const text = (result.content as Array<{ type: string; text: string }>)[0]!.text;
     // Could have 0 or more mates depending on other tests, but should not error
     expect(typeof text).toBe("string");
     expect(result.isError).toBeFalsy();
@@ -120,7 +120,7 @@ describe("list_mates", () => {
     const helper = await registerHelper({ summary: "working on tests" });
     try {
       const result = await client.callTool({ name: "list_mates", arguments: { scope: "machine" } });
-      const text = (result.content as Array<{ type: string; text: string }>)[0].text;
+      const text = (result.content as Array<{ type: string; text: string }>)[0]!.text;
       expect(text).toContain(helper.id);
       expect(text).toContain("working on tests");
       expect(text).toMatch(/Found \d+ mate/);
@@ -135,7 +135,7 @@ describe("list_mates", () => {
     const otherCwd = await registerHelper({ cwd: "/tmp/other-dir" });
     try {
       const result = await client.callTool({ name: "list_mates", arguments: { scope: "directory" } });
-      const text = (result.content as Array<{ type: string; text: string }>)[0].text;
+      const text = (result.content as Array<{ type: string; text: string }>)[0]!.text;
       expect(text).toContain(sameCwd.id);
       expect(text).not.toContain(otherCwd.id);
     } finally {
@@ -153,7 +153,7 @@ describe("set_summary", () => {
       name: "set_summary",
       arguments: { summary: "writing server tests" },
     });
-    const text = (result.content as Array<{ type: string; text: string }>)[0].text;
+    const text = (result.content as Array<{ type: string; text: string }>)[0]!.text;
     expect(text).toContain('Summary updated');
     expect(text).toContain("writing server tests");
     expect(result.isError).toBeFalsy();
@@ -176,7 +176,7 @@ describe("send_message", () => {
         name: "send_message",
         arguments: { to_id: helper.id, message: "hello from MCP" },
       });
-      const text = (result.content as Array<{ type: string; text: string }>)[0].text;
+      const text = (result.content as Array<{ type: string; text: string }>)[0]!.text;
       expect(text).toContain(`Message sent to mate ${helper.id}`);
       expect(result.isError).toBeFalsy();
 
@@ -185,7 +185,7 @@ describe("send_message", () => {
         id: helper.id,
       });
       expect(poll.messages).toHaveLength(1);
-      expect(poll.messages[0].text).toBe("hello from MCP");
+      expect(poll.messages[0]!.text).toBe("hello from MCP");
     } finally {
       await brokerPost("/unregister", { id: helper.id });
       helper.child.kill();
@@ -198,7 +198,7 @@ describe("send_message", () => {
       arguments: { to_id: "zzzzzzzz", message: "oops" },
     });
     expect(result.isError).toBe(true);
-    const text = (result.content as Array<{ type: string; text: string }>)[0].text;
+    const text = (result.content as Array<{ type: string; text: string }>)[0]!.text;
     expect(text).toContain("Failed to send");
   });
 });
@@ -209,7 +209,7 @@ describe("check_messages", () => {
     await client.callTool({ name: "check_messages", arguments: {} });
     // Now check again — should be empty
     const result = await client.callTool({ name: "check_messages", arguments: {} });
-    const text = (result.content as Array<{ type: string; text: string }>)[0].text;
+    const text = (result.content as Array<{ type: string; text: string }>)[0]!.text;
     expect(text).toContain("No new messages");
     expect(result.isError).toBeFalsy();
   });
@@ -238,7 +238,7 @@ describe("check_messages", () => {
 
       // Immediately call check_messages before the poll loop (1s interval) consumes it
       const result = await client.callTool({ name: "check_messages", arguments: {} });
-      const text = (result.content as Array<{ type: string; text: string }>)[0].text;
+      const text = (result.content as Array<{ type: string; text: string }>)[0]!.text;
 
       // The message should be retrieved by check_messages OR already consumed by the poll loop.
       // Either outcome is correct behavior — the message was delivered.

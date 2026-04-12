@@ -24,7 +24,6 @@ import type {
   Mate,
   RegisterResponse,
   PollMessagesResponse,
-  Message,
   Task,
   TransitionResponse,
   CreateTaskResponse,
@@ -641,7 +640,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
         cancel_task: "/cancel-task",
       };
       try {
-        const result = await brokerFetch<TransitionResponse>(endpointMap[name], { caller_id: myId, ...args });
+        const result = await brokerFetch<TransitionResponse>(endpointMap[name]!, { caller_id: myId, ...args });
         if (!result.ok) return { content: [{ type: "text" as const, text: `Error: ${result.error}` }], isError: true };
         if (result.already_done) return { content: [{ type: "text" as const, text: `Already done (idempotent).` }] };
         return { content: [{ type: "text" as const, text: `OK — task ${(args as { task_id: string }).task_id} is now ${result.task?.status}` }] };
