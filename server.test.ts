@@ -71,10 +71,26 @@ afterAll(async () => {
 // --- Tests ---
 
 describe("tool listing", () => {
-  test("exposes all 4 tools", async () => {
+  test("exposes all 15 tools", async () => {
     const { tools } = await client.listTools();
     const names = tools.map((t) => t.name).sort();
-    expect(names).toEqual(["check_messages", "list_mates", "send_message", "set_summary"]);
+    expect(names).toEqual([
+      "accept_assignment",
+      "accept_result",
+      "cancel_task",
+      "check_messages",
+      "create_task",
+      "decline_assignment",
+      "get_task",
+      "list_mates",
+      "list_my_tasks",
+      "reject_result",
+      "report_blocker",
+      "report_result",
+      "resume_blocked_task",
+      "send_message",
+      "set_summary",
+    ]);
   });
 });
 
