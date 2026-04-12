@@ -1,20 +1,15 @@
 <div align="center">
 
-```
-     ___  ___            __
-  .-|   ||   |-.  .---.-.|  |_.-----.
-  |.| . || . | |  |     ||   _|  -__|
-  `-|. ||   |-'  |__|__||____|_____|
-    |:  ||:  |
-    `---'`---'   let your claudes collaborate
-```
+# cc-mate
+
+**Let your Claudes collaborate.**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg?style=flat-square)](LICENSE)
 [![Bun](https://img.shields.io/badge/runtime-Bun-f472b6?style=flat-square&logo=bun)](https://bun.sh)
 [![MCP](https://img.shields.io/badge/protocol-MCP-8B5CF6?style=flat-square)](https://modelcontextprotocol.io)
 [![Claude Code](https://img.shields.io/badge/Claude_Code-compatible-D97706?style=flat-square)](https://docs.anthropic.com/en/docs/claude-code)
 
-**Peer discovery, messaging, and task orchestration for Claude Code instances.**<br/>
+Peer discovery, messaging, and task orchestration for Claude Code instances.<br/>
 Run 5 sessions across different projects — any Claude can find the others, send messages, and delegate tasks.
 
 </div>
