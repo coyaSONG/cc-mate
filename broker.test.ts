@@ -241,3 +241,112 @@ describe("unregister", () => {
     expect(mates.every((m) => m.id !== id)).toBe(true);
   });
 });
+
+describe("task orchestration — happy path", () => {
+  test("create → accept → report → accept_result → completed", async () => {
+    const orch = await register({ pid: process.pid, cwd: "/tmp/orch" });
+    const child = Bun.spawn(["sleep", "30"]);
+    const worker = await register({ pid: child.pid, cwd: "/tmp/worker" });
+
+    try {
+      const created = await post("/create-task", {
+        orchestrator_id: orch.id, to_id: worker.id,
+        title: "Fix bug", description: "Fix the login bug",
+      }) as { task_id: string; status: string };
+      expect(created.task_id).toMatch(/^t_/);
+      expect(created.status).toBe("assigned");
+
+      const accepted = await post("/accept-assignment", {
+        caller_id: worker.id, task_id: created.task_id,
+      }) as { ok: boolean; task: { status: string } };
+      expect(accepted.ok).toBe(true);
+      expect(accepted.task.status).toBe("in_progress");
+
+      const reported = await post("/report-result", {
+        caller_id: worker.id, task_id: created.task_id,
+        result_text: "Bug fixed in login.ts",
+      }) as { ok: boolean; task: { status: string } };
+      expect(reported.ok).toBe(true);
+      expect(reported.task.status).toBe("awaiting_review");
+
+      const completed = await post("/accept-result", {
+        caller_id: orch.id, task_id: created.task_id,
+      }) as { ok: boolean; task: { status: string } };
+      expect(completed.ok).toBe(true);
+      expect(completed.task.status).toBe("completed");
+    } finally {
+      child.kill();
+    }
+  });
+});
+
+describe("task orchestration — error cases", () => {
+  test("403 when wrong role calls endpoint", async () => {
+    const orch = await register({ pid: process.pid, cwd: "/tmp/orch" });
+    const child = Bun.spawn(["sleep", "30"]);
+    const worker = await register({ pid: child.pid, cwd: "/tmp/worker" });
+
+    try {
+      const created = await post("/create-task", {
+        orchestrator_id: orch.id, to_id: worker.id,
+        title: "T", description: "D",
+      }) as { task_id: string };
+
+      // Orchestrator tries to accept (should be worker-only)
+      const res = await fetch(`${BASE}/accept-assignment`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ caller_id: orch.id, task_id: created.task_id }),
+      });
+      expect(res.status).toBe(403);
+    } finally {
+      child.kill();
+    }
+  });
+
+  test("409 for invalid state transition", async () => {
+    const orch = await register({ pid: process.pid, cwd: "/tmp/orch" });
+    const child = Bun.spawn(["sleep", "30"]);
+    const worker = await register({ pid: child.pid, cwd: "/tmp/worker" });
+
+    try {
+      const created = await post("/create-task", {
+        orchestrator_id: orch.id, to_id: worker.id,
+        title: "T", description: "D",
+      }) as { task_id: string };
+
+      // Try to report result before accepting (should be 409)
+      const res = await fetch(`${BASE}/report-result`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ caller_id: worker.id, task_id: created.task_id, result_text: "X" }),
+      });
+      expect(res.status).toBe(409);
+    } finally {
+      child.kill();
+    }
+  });
+
+  test("notification messages delivered to worker via poll", async () => {
+    const orch = await register({ pid: process.pid, cwd: "/tmp/orch" });
+    const child = Bun.spawn(["sleep", "30"]);
+    const worker = await register({ pid: child.pid, cwd: "/tmp/worker" });
+
+    try {
+      await post("/create-task", {
+        orchestrator_id: orch.id, to_id: worker.id,
+        title: "Test task", description: "Desc",
+      });
+
+      const poll = await post("/poll-messages", { id: worker.id }) as { messages: Array<{ meta: string; text: string }> };
+      expect(poll.messages.length).toBeGreaterThanOrEqual(1);
+      const taskMsg = poll.messages.find((m) => m.meta);
+      expect(taskMsg).toBeDefined();
+      const meta = JSON.parse(taskMsg!.meta);
+      expect(meta.event_type).toBe("created");
+      expect(meta.to_status).toBe("assigned");
+    } finally {
+      child.kill();
+    }
+  });
+});

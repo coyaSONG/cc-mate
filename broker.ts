@@ -22,6 +22,7 @@ import type {
   Mate,
   Message,
 } from "./shared/types.ts";
+import { setupTaskEngine } from "./broker-tasks.ts";
 
 const PORT = parseInt(process.env.CC_MATE_PORT ?? "7349", 10);
 const DB_PATH = process.env.CC_MATE_DB ?? `${process.env.HOME}/.cc-mate.db`;
@@ -58,6 +59,8 @@ db.run(`
   )
 `);
 
+const taskEngine = setupTaskEngine(db);
+
 // Clean up stale mates (PIDs that no longer exist) on startup
 function cleanStaleMates() {
   const mates = db.query("SELECT id, pid FROM mates").all() as { id: string; pid: number }[];
@@ -66,7 +69,8 @@ function cleanStaleMates() {
       // Check if process is still alive (signal 0 doesn't kill, just checks)
       process.kill(mate.pid, 0);
     } catch {
-      // Process doesn't exist, remove it
+      // Process doesn't exist — clean up tasks before removing mate
+      taskEngine.cleanStaleMateTasks(mate.id);
       db.run("DELETE FROM mates WHERE id = ?", [mate.id]);
       db.run("DELETE FROM messages WHERE to_id = ? AND delivered = 0", [mate.id]);
     }
@@ -77,6 +81,7 @@ cleanStaleMates();
 
 // Periodically clean stale mates (every 30s)
 setInterval(cleanStaleMates, 30_000);
+setInterval(() => taskEngine.checkTaskTimeouts(), 30_000);
 
 // --- Prepared statements ---
 
@@ -260,6 +265,47 @@ Bun.serve({
         case "/unregister":
           handleUnregister(body as { id: string });
           return Response.json({ ok: true });
+        case "/create-task": {
+          const result = taskEngine.handleCreateTask(body);
+          if ("error" in result) {
+            return Response.json({ error: result.error }, { status: result.status_code });
+          }
+          return Response.json(result);
+        }
+        case "/list-tasks":
+          return Response.json(taskEngine.handleListTasks(body));
+        case "/get-task": {
+          const result = taskEngine.handleGetTask(body);
+          if ("error" in result) {
+            return Response.json({ error: result.error }, { status: result.status_code });
+          }
+          return Response.json(result);
+        }
+        case "/accept-assignment":
+        case "/decline-assignment":
+        case "/report-result":
+        case "/report-blocker":
+        case "/accept-result":
+        case "/reject-result":
+        case "/resume-task":
+        case "/cancel-task": {
+          const handlers: Record<string, (body: any) => any> = {
+            "/accept-assignment": taskEngine.handleAcceptAssignment,
+            "/decline-assignment": taskEngine.handleDeclineAssignment,
+            "/report-result": taskEngine.handleReportResult,
+            "/report-blocker": taskEngine.handleReportBlocker,
+            "/accept-result": taskEngine.handleAcceptResult,
+            "/reject-result": taskEngine.handleRejectResult,
+            "/resume-task": taskEngine.handleResumeTask,
+            "/cancel-task": taskEngine.handleCancelTask,
+          };
+          const handler = handlers[path];
+          const result = handler(body);
+          if (!result.ok) {
+            return Response.json({ error: result.error }, { status: result.status_code ?? 500 });
+          }
+          return Response.json(result);
+        }
         default:
           return Response.json({ error: "not found" }, { status: 404 });
       }
