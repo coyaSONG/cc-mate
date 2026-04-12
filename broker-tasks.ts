@@ -207,25 +207,28 @@ export function setupTaskEngine(db: Database): TaskEngine {
     const payloadJson = opts.eventPayload ? JSON.stringify(opts.eventPayload) : null;
 
     // Execute in a single transaction
-    const txn = db.transaction(() => {
-      db.run(updateSql, updateParams as import("bun:sqlite").SQLQueryBindings[]);
-      insertTaskEvent.run(task.id, eventType, actorId, fromStatus, toStatus, payloadJson, now);
-      insertTaskMessage.run(actorId, opts.notifyToId, opts.notifyText, now, meta);
-    });
-
-    txn();
-
-    const updated = selectTask.get(task.id);
-    if (!updated || updated.status !== toStatus) {
-      // Race condition: another process changed the status first
-      return {
-        ok: false,
-        error: `Concurrent modification detected for task ${task.id}`,
-        status_code: 409,
-      };
+    try {
+      db.transaction(() => {
+        const result = db.run(updateSql, updateParams as import("bun:sqlite").SQLQueryBindings[]);
+        if (result.changes === 0) {
+          throw new Error("concurrent_modification");
+        }
+        insertTaskEvent.run(task.id, eventType, actorId, fromStatus, toStatus, payloadJson, now);
+        insertTaskMessage.run(actorId, opts.notifyToId, opts.notifyText, now, meta);
+      })();
+    } catch (err) {
+      if (err instanceof Error && err.message === "concurrent_modification") {
+        return {
+          ok: false,
+          error: `Concurrent modification detected for task ${task.id}`,
+          status_code: 409,
+        };
+      }
+      throw err;
     }
 
-    return { ok: true, task: updated };
+    const updated = selectTask.get(task.id);
+    return { ok: true, task: updated! };
   }
 
   // --- Handlers ---
@@ -280,10 +283,18 @@ export function setupTaskEngine(db: Database): TaskEngine {
         nowIso
       );
 
+      const notifyText = [
+        `New task assigned: "${body.title}"`,
+        `Description: ${body.description}`,
+        `Accept by: ${assignedDeadline}`,
+        `Complete by: ${progressDeadline}`,
+        `Use accept_assignment to take it, or decline_assignment with a reason.`,
+      ].join("\n");
+
       insertTaskMessage.run(
         body.orchestrator_id,
         body.to_id,
-        `New task assigned: "${body.title}"`,
+        notifyText,
         nowIso,
         meta
       );
