@@ -172,34 +172,26 @@ const mcp = new Server(
       experimental: { "claude/channel": {} },
       tools: {},
     },
-    instructions: `You are connected to the cc-mate network. Other Claude Code instances on this machine can see you and send you messages.
+    instructions: `You are on the cc-mate network. Other Claude Code instances can message you.
 
-IMPORTANT: When you receive a <channel source="cc-mate" ...> message, RESPOND IMMEDIATELY. Do not wait until your current task is finished. Pause what you are doing, reply to the message using send_message, then resume your work. Treat incoming mate messages like a coworker tapping you on the shoulder — answer right away, even if you're in the middle of something.
+Messages arrive as:
+  <channel source="cc-mate" from_id="ID" from_summary="..." from_cwd="...">
+  message text
+  </channel>
 
-Read the from_id, from_summary, and from_cwd attributes to understand who sent the message. Reply by calling send_message with their from_id.
+To reply to a message:
+1. Read the from_id attribute from the <channel> tag.
+2. Process the request or formulate your response.
+3. Call the send_message tool with to_id set to that from_id.
 
-When you receive a task event (kind="task_event"), respond using the appropriate task tool:
-- As a worker: accept_assignment, decline_assignment, report_result, report_blocker
-- As an orchestrator: accept_result, reject_result, resume_blocked_task, cancel_task
+CRITICAL: You MUST actually invoke the send_message tool to deliver your reply. Writing text that describes sending a message is NOT the same as sending it. The other instance will never see your response unless you call the tool.
 
-Available tools:
-- list_mates: Discover other Claude Code instances (scope: machine/directory/repo)
-- send_message: Send a message to another instance by ID
-- set_summary: Set a 1-2 sentence summary of what you're working on (visible to other mates)
-- check_messages: Manually check for new messages
-- create_task: Assign a task to another instance (you become orchestrator)
-- list_my_tasks: List tasks you're involved in (as orchestrator or worker)
-- get_task: Get full task details and event history
-- accept_assignment: Accept a task assigned to you
-- decline_assignment: Decline a task with a reason
-- report_result: Submit your work for review
-- report_blocker: Report you're stuck on a task
-- accept_result: Approve worker's result (task complete)
-- reject_result: Reject result with feedback (worker retries)
-- resume_blocked_task: Unblock a task with guidance
-- cancel_task: Cancel a task
+Task events arrive with kind="task_event" attribute. Read task_id and to_status, then call the appropriate tool:
+- Worker: accept_assignment, decline_assignment, report_result, report_blocker
+- Orchestrator: accept_result, reject_result, resume_blocked_task, cancel_task
 
-When you start, proactively call set_summary to describe what you're working on. This helps other instances understand your context.`,
+On startup, call set_summary to describe your current work.
+After completing any long-running task (subagents, large analysis), call check_messages to catch notifications that may have arrived while you were busy.`,
   }
 );
 
@@ -699,9 +691,19 @@ async function pollAndPushMessages() {
         meta.to_status = taskMeta.to_status;
       }
 
+      // Embed action hint directly in the notification content.
+      // This survives context compaction and "lost in the middle" — the model
+      // sees the required tool call right next to the message body.
+      let content = msg.text;
+      if (taskMeta) {
+        content += `\n\n[Respond with the appropriate task tool for task ${taskMeta.task_id}]`;
+      } else if (msg.from_id !== "broker") {
+        content += `\n\n[Call send_message with to_id="${msg.from_id}" to reply]`;
+      }
+
       await mcp.notification({
         method: "notifications/claude/channel",
-        params: { content: msg.text, meta },
+        params: { content, meta },
       });
 
       log(
@@ -745,6 +747,10 @@ async function main() {
   await mcp.connect(new StdioServerTransport());
   log("MCP connected");
 
+  // Keep Bun's event loop alive after the MCP handshake (oven-sh/bun#16718).
+  // Must be AFTER transport setup so it doesn't interfere with stdio wiring.
+  process.stdin.resume();
+
   // 6. Start polling for inbound messages
   const pollTimer = setInterval(pollAndPushMessages, POLL_INTERVAL_MS);
 
@@ -776,6 +782,8 @@ async function main() {
 
   process.on("SIGINT", cleanup);
   process.on("SIGTERM", cleanup);
+  // Exit when the parent (Claude Code) closes the stdio pipe.
+  process.stdin.on("end", cleanup);
 }
 
 main().catch((e) => {
