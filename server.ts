@@ -163,6 +163,11 @@ let myId: MateId | null = null;
 let myCwd = process.cwd();
 let myGitRoot: string | null = null;
 
+// Track pending replies — maps from_id → push timestamp for nudge logic
+const pendingReplies = new Map<string, { pushedAt: number; nudgeCount: number }>();
+// Last received channel message sender — used by the `reply` tool
+let lastReceivedFromId: string | null = null;
+
 // --- MCP Server ---
 
 const mcp = new Server(
@@ -174,24 +179,22 @@ const mcp = new Server(
     },
     instructions: `You are on the cc-mate network. Other Claude Code instances can message you.
 
-Messages arrive as:
-  <channel source="cc-mate" from_id="ID" from_summary="..." from_cwd="...">
-  message text
-  </channel>
+Messages arrive as <channel source="cc-mate" from_id="ID" ...>message</channel>
 
-To reply to a message:
-1. Read the from_id attribute from the <channel> tag.
-2. Process the request or formulate your response.
-3. Call the send_message tool with to_id set to that from_id.
+REQUIRED PROTOCOL for every inbound <channel> message:
+Step 1: IMMEDIATELY call reply(message="Acknowledged, working on it...") BEFORE doing any analysis. This is mandatory — do it first.
+Step 2: Do your work (read files, analyze code, etc.)
+Step 3: Call reply(message="your full response here") to deliver the result.
 
-CRITICAL: You MUST actually invoke the send_message tool to deliver your reply. Writing text that describes sending a message is NOT the same as sending it. The other instance will never see your response unless you call the tool.
+You MUST call reply (or send_message) in BOTH Step 1 and Step 3.
+Writing text without calling the tool does NOT deliver your response — the sender sees nothing.
+NEVER respond to a <channel> message with plain text only.
 
-Task events arrive with kind="task_event" attribute. Read task_id and to_status, then call the appropriate tool:
+Task events arrive with kind="task_event". Read task_id and to_status, then call the appropriate task tool:
 - Worker: accept_assignment, decline_assignment, report_result, report_blocker
 - Orchestrator: accept_result, reject_result, resume_blocked_task, cancel_task
 
-On startup, call set_summary to describe your current work.
-After completing any long-running task (subagents, large analysis), call check_messages to catch notifications that may have arrived while you were busy.`,
+On startup, call set_summary to describe your current work.`,
   }
 );
 
@@ -232,6 +235,25 @@ const TOOLS = [
         },
       },
       required: ["to_id", "message"],
+    },
+  },
+  {
+    name: "reply",
+    description:
+      "Reply to the most recent inbound channel message. This is the PRIMARY way to respond when you receive a message from another instance. Automatically sends to whoever messaged you last.",
+    inputSchema: {
+      type: "object" as const,
+      properties: {
+        message: {
+          type: "string" as const,
+          description: "Your reply message",
+        },
+        to_id: {
+          type: "string" as const,
+          description: "Override recipient (optional — defaults to last message sender)",
+        },
+      },
+      required: ["message"],
     },
   },
   {
@@ -470,6 +492,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
             isError: true,
           };
         }
+        pendingReplies.delete(to_id);
         return {
           content: [{ type: "text" as const, text: `Message sent to mate ${to_id}` }],
         };
@@ -483,6 +506,29 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
           ],
           isError: true,
         };
+      }
+    }
+
+    case "reply": {
+      const { message, to_id: explicitTo } = args as { message: string; to_id?: string };
+      const replyTo = explicitTo ?? lastReceivedFromId;
+      if (!myId) {
+        return { content: [{ type: "text" as const, text: "Not registered with broker yet" }], isError: true };
+      }
+      if (!replyTo) {
+        return { content: [{ type: "text" as const, text: "No recent message to reply to. Use send_message with an explicit to_id." }], isError: true };
+      }
+      try {
+        const result = await brokerFetch<{ ok: boolean; error?: string }>("/send-message", {
+          from_id: myId, to_id: replyTo, text: message,
+        });
+        if (!result.ok) {
+          return { content: [{ type: "text" as const, text: `Failed to send: ${result.error}` }], isError: true };
+        }
+        pendingReplies.delete(replyTo);
+        return { content: [{ type: "text" as const, text: `Reply sent to mate ${replyTo}` }] };
+      } catch (e) {
+        return { content: [{ type: "text" as const, text: `Error: ${e instanceof Error ? e.message : String(e)}` }], isError: true };
       }
     }
 
@@ -691,14 +737,21 @@ async function pollAndPushMessages() {
         meta.to_status = taskMeta.to_status;
       }
 
-      // Embed action hint directly in the notification content.
-      // This survives context compaction and "lost in the middle" — the model
-      // sees the required tool call right next to the message body.
+      // Structured action hint — survives context compaction and "lost in the middle".
       let content = msg.text;
       if (taskMeta) {
-        content += `\n\n[Respond with the appropriate task tool for task ${taskMeta.task_id}]`;
+        content += `\n\n---\nACTION REQUIRED: call the appropriate task tool for task ${taskMeta.task_id}\n---`;
       } else if (msg.from_id !== "broker") {
-        content += `\n\n[Call send_message with to_id="${msg.from_id}" to reply]`;
+        content += `\n\n---\n`
+          + `RESPONSE PROTOCOL (mandatory):\n`
+          + `Step 1: call reply(message="Acknowledged, working on it...")\n`
+          + `Step 2: do your work\n`
+          + `Step 3: call reply(message="your full response")\n`
+          + `WARNING: Plain text output is NOT delivered. ONLY tool calls reach the sender.\n`
+          + `---`;
+        // Track as pending reply
+        lastReceivedFromId = msg.from_id;
+        pendingReplies.set(msg.from_id, { pushedAt: Date.now(), nudgeCount: 0 });
       }
 
       await mcp.notification({
@@ -754,6 +807,32 @@ async function main() {
   // 6. Start polling for inbound messages
   const pollTimer = setInterval(pollAndPushMessages, POLL_INTERVAL_MS);
 
+  // 6b. Nudge timer — re-notify if a channel message went unreplied for 30s
+  const NUDGE_INTERVAL_MS = 10_000;
+  const NUDGE_DELAY_MS = 30_000;
+  const MAX_NUDGES = 2;
+  const nudgeTimer = setInterval(async () => {
+    const now = Date.now();
+    for (const [fromId, pending] of pendingReplies) {
+      if (now - pending.pushedAt > NUDGE_DELAY_MS && pending.nudgeCount < MAX_NUDGES) {
+        pending.nudgeCount++;
+        pending.pushedAt = now;
+        log(`Nudge #${pending.nudgeCount} for unreplied message from ${fromId}`);
+        await mcp.notification({
+          method: "notifications/claude/channel",
+          params: {
+            content: `REMINDER: You received a message from mate ${fromId} but have not replied yet. Call reply(message="...") or send_message(to_id="${fromId}", message="...") NOW.`,
+            meta: { from_id: "system", from_summary: "", from_cwd: "", sent_at: new Date().toISOString() },
+          },
+        });
+      }
+      // Clean up stale entries after max nudges + grace period
+      if (pending.nudgeCount >= MAX_NUDGES && now - pending.pushedAt > NUDGE_DELAY_MS) {
+        pendingReplies.delete(fromId);
+      }
+    }
+  }, NUDGE_INTERVAL_MS);
+
   // 7. Start heartbeat
   const heartbeatTimer = setInterval(async () => {
     if (myId) {
@@ -768,6 +847,7 @@ async function main() {
   // 8. Clean up on exit
   const cleanup = async () => {
     clearInterval(pollTimer);
+    clearInterval(nudgeTimer);
     clearInterval(heartbeatTimer);
     if (myId) {
       try {

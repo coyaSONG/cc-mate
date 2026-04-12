@@ -71,7 +71,7 @@ afterAll(async () => {
 // --- Tests ---
 
 describe("tool listing", () => {
-  test("exposes all 15 tools", async () => {
+  test("exposes all 16 tools", async () => {
     const { tools } = await client.listTools();
     const names = tools.map((t) => t.name).sort();
     expect(names).toEqual([
@@ -85,6 +85,7 @@ describe("tool listing", () => {
       "list_mates",
       "list_my_tasks",
       "reject_result",
+      "reply",
       "report_blocker",
       "report_result",
       "resume_blocked_task",
