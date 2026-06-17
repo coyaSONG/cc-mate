@@ -33,6 +33,23 @@ async function registerHelper(overrides: Partial<{ cwd: string; git_root: string
   return { id, child };
 }
 
+async function waitForHelperMessage(
+  helperId: string,
+  predicate: (msg: { text: string; meta: string | null }) => boolean = () => true,
+  timeoutMs = 3000
+) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const poll = await brokerPost<{ messages: Array<{ text: string; meta: string | null }> }>("/poll-messages", {
+      id: helperId,
+    });
+    const found = poll.messages.find(predicate);
+    if (found) return found;
+    await Bun.sleep(50);
+  }
+  throw new Error(`Timed out waiting for helper message ${helperId}`);
+}
+
 beforeAll(async () => {
   // 1. Start test broker
   broker = Bun.spawn(["bun", "broker.ts"], {
@@ -71,7 +88,7 @@ afterAll(async () => {
 // --- Tests ---
 
 describe("tool listing", () => {
-  test("exposes all 16 tools", async () => {
+  test("exposes all 17 tools", async () => {
     const { tools } = await client.listTools();
     const names = tools.map((t) => t.name).sort();
     expect(names).toEqual([
@@ -88,6 +105,7 @@ describe("tool listing", () => {
       "reply",
       "report_blocker",
       "report_result",
+      "respond_call",
       "resume_blocked_task",
       "send_message",
       "set_summary",
@@ -201,6 +219,78 @@ describe("send_message", () => {
     expect(result.isError).toBe(true);
     const text = (result.content as Array<{ type: string; text: string }>)[0]!.text;
     expect(text).toContain("Failed to send");
+  });
+});
+
+describe("reply and respond_call", () => {
+  test("reply with explicit to_id sends to helper mate", async () => {
+    const helper = await registerHelper();
+    try {
+      const result = await client.callTool({
+        name: "reply",
+        arguments: { to_id: helper.id, message: "explicit reply" },
+      });
+      const text = (result.content as Array<{ type: string; text: string }>)[0]!.text;
+      expect(result.isError).toBeFalsy();
+      expect(text).toContain(`Reply sent to mate ${helper.id}`);
+
+      const msg = await waitForHelperMessage(helper.id);
+      expect(msg.text).toBe("explicit reply");
+      expect(msg.meta).toBeNull();
+    } finally {
+      await brokerPost("/unregister", { id: helper.id });
+      helper.child.kill();
+    }
+  });
+
+  test("respond_call routes by request_id after call_request channel delivery", async () => {
+    const helper = await registerHelper();
+    try {
+      const mates = await brokerPost<Array<{ id: string }>>("/list-mates", {
+        scope: "machine",
+        cwd: "/",
+        git_root: null,
+      });
+      const serverMate = mates.find((m) => m.id !== helper.id);
+      expect(serverMate).toBeDefined();
+
+      await brokerPost("/send-message", {
+        from_id: helper.id,
+        to_id: serverMate!.id,
+        text: "call request body",
+        meta: {
+          kind: "call_request",
+          schema_version: 1,
+          request_id: "req_server_test",
+          reply_to: helper.id,
+        },
+      });
+
+      let result: Awaited<ReturnType<typeof client.callTool>> | null = null;
+      for (let i = 0; i < 30; i++) {
+        result = await client.callTool({
+          name: "respond_call",
+          arguments: {
+            request_id: "req_server_test",
+            message: "server final",
+            final: true,
+          },
+        });
+        if (!result.isError) break;
+        await Bun.sleep(100);
+      }
+
+      expect(result?.isError).toBeFalsy();
+      const msg = await waitForHelperMessage(helper.id);
+      expect(msg.text).toBe("server final");
+      const meta = JSON.parse(msg.meta!);
+      expect(meta.kind).toBe("call_response");
+      expect(meta.request_id).toBe("req_server_test");
+      expect(meta.final).toBe(true);
+    } finally {
+      await brokerPost("/unregister", { id: helper.id });
+      helper.child.kill();
+    }
   });
 });
 

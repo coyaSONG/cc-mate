@@ -26,9 +26,12 @@ claude --dangerously-load-development-channels server:cc-mate
 # { "cc-mate": { "command": "bun", "args": ["./server.ts"] } }
 
 # CLI:
+bun cli.ts doctor
 bun cli.ts status
-bun cli.ts mates
+bun cli.ts mates --scope repo
 bun cli.ts send <mate-id> <message>
+bun cli.ts call --to <mate-id> <message>
+bun cli.ts chat --to <mate-id> --turn <message>
 bun cli.ts kill-broker
 ```
 

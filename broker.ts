@@ -54,6 +54,7 @@ db.run(`
     text TEXT NOT NULL,
     sent_at TEXT NOT NULL,
     delivered INTEGER NOT NULL DEFAULT 0,
+    meta TEXT,
     FOREIGN KEY (from_id) REFERENCES mates(id),
     FOREIGN KEY (to_id) REFERENCES mates(id)
   )
@@ -115,8 +116,8 @@ const selectMatesByGitRoot = db.prepare(`
 `);
 
 const insertMessage = db.prepare(`
-  INSERT INTO messages (from_id, to_id, text, sent_at, delivered)
-  VALUES (?, ?, ?, ?, 0)
+  INSERT INTO messages (from_id, to_id, text, sent_at, delivered, meta)
+  VALUES (?, ?, ?, ?, 0, ?)
 `);
 
 const selectUndelivered = db.prepare(`
@@ -209,7 +210,13 @@ function handleSendMessage(body: SendMessageRequest): { ok: boolean; error?: str
     return { ok: false, error: `Mate ${body.to_id} not found` };
   }
 
-  insertMessage.run(body.from_id, body.to_id, body.text, new Date().toISOString());
+  const meta = body.meta == null
+    ? null
+    : typeof body.meta === "string"
+      ? body.meta
+      : JSON.stringify(body.meta);
+
+  insertMessage.run(body.from_id, body.to_id, body.text, new Date().toISOString(), meta);
   return { ok: true };
 }
 
@@ -226,6 +233,7 @@ function handlePollMessages(body: PollMessagesRequest): PollMessagesResponse {
 
 function handleUnregister(body: { id: string }): void {
   deleteMate.run(body.id);
+  db.run("DELETE FROM messages WHERE delivered = 0 AND (from_id = ? OR to_id = ?)", [body.id, body.id]);
 }
 
 // --- HTTP Server ---

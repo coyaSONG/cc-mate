@@ -5,8 +5,12 @@
   "module": "index.ts",
   "type": "module",
   "private": true,
+  "bin": {
+    "cc-mate": "./cli.ts"
+  },
   "scripts": {
     "broker": "bun broker.ts",
+    "cli": "bun cli.ts",
     "server": "bun server.ts",
     "test": "bun test"
   },

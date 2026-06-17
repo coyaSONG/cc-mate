@@ -19,7 +19,7 @@ export interface Message {
   text: string;
   sent_at: string; // ISO timestamp
   delivered: boolean;
-  meta: string | null; // JSON — null for free chat, {task_id, event_type, to_status} for task events
+  meta: string | null; // JSON — null for free chat, request metadata, or {task_id, event_type, to_status} for task events
 }
 
 // --- Broker API types ---
@@ -57,6 +57,7 @@ export interface SendMessageRequest {
   from_id: MateId;
   to_id: MateId;
   text: string;
+  meta?: string | Record<string, unknown> | null;
 }
 
 export interface PollMessagesRequest {

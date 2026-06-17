@@ -192,6 +192,53 @@ describe("send-message & poll-messages", () => {
       child.kill();
     }
   });
+
+  test("stores optional metadata for normal messages", async () => {
+    const { id: sender } = await register({ pid: process.pid, cwd: "/tmp/s" });
+    const child = Bun.spawn(["sleep", "30"]);
+    const { id: receiver } = await register({ pid: child.pid, cwd: "/tmp/r" });
+
+    try {
+      const sendRes = await post("/send-message", {
+        from_id: sender,
+        to_id: receiver,
+        text: "call prompt",
+        meta: {
+          kind: "call_request",
+          request_id: "req_123",
+          schema_version: 1,
+        },
+      });
+      expect(sendRes).toEqual({ ok: true });
+
+      const poll = await post("/poll-messages", { id: receiver }) as { messages: Array<{ meta: string | null; text: string }> };
+      expect(poll.messages).toHaveLength(1);
+      expect(poll.messages[0]!.text).toBe("call prompt");
+      expect(JSON.parse(poll.messages[0]!.meta!)).toEqual({
+        kind: "call_request",
+        request_id: "req_123",
+        schema_version: 1,
+      });
+    } finally {
+      child.kill();
+    }
+  });
+
+  test("unregister removes pending messages for the mate", async () => {
+    const { id: sender } = await register({ pid: process.pid, cwd: "/tmp/s" });
+    const child = Bun.spawn(["sleep", "30"]);
+    const { id: receiver } = await register({ pid: child.pid, cwd: "/tmp/r" });
+
+    try {
+      await post("/send-message", { from_id: sender, to_id: receiver, text: "pending" });
+      await post("/unregister", { id: receiver });
+
+      const poll = await post("/poll-messages", { id: receiver }) as { messages: unknown[] };
+      expect(poll.messages).toHaveLength(0);
+    } finally {
+      child.kill();
+    }
+  });
 });
 
 describe("set-summary & heartbeat", () => {

@@ -59,21 +59,58 @@ claude mcp add --scope user --transport stdio cc-mate -- bun ~/cc-mate/server.ts
 ### 3. Launch with channel support
 
 ```bash
-claude --dangerously-skip-permissions --dangerously-load-development-channels server:cc-mate
+claude --dangerously-load-development-channels server:cc-mate
 ```
 
 The broker daemon starts automatically on first launch.
+
+Use `--dangerously-skip-permissions` only when your Claude Code workflow already requires it; cc-mate itself only needs channel support.
 
 > **Tip:** Create an alias:
 > ```bash
 > alias ccmate='claude --dangerously-load-development-channels server:cc-mate'
 > ```
 
-### 4. Open a second session and try it
+### 4. Check the local bridge
+
+```bash
+bun cli.ts doctor
+bun cli.ts mates
+```
+
+### 5. Open a second session and try it
 
 ```
 > List all mates on this machine
 > Send a message to mate [id]: "what are you working on?"
+```
+
+## Use from Codex or a Shell
+
+`cc-mate call` is the request/response path for non-Claude callers such as Codex. It registers a temporary caller with the broker, sends a `call_request` with a `request_id`, waits for a final `call_response`, then unregisters itself.
+
+```bash
+# If exactly one Claude session is visible, --to is optional.
+bun cli.ts call --to <mate-id> "Review the current repository state and reply with the next action."
+
+# Machine-readable output for automation.
+bun cli.ts call --to <mate-id> --json --timeout 180 "Summarize the failing test and proposed fix."
+
+# Multi-turn conversation over one conversation id.
+bun cli.ts chat --to <mate-id> \
+  --turn "What context do you have?" \
+  --turn "Given that, what should Codex change first?"
+```
+
+Target selection is deterministic:
+- `--to <id>` or `--target <id>` always wins and accepts an exact ID or unique prefix.
+- Without `--to`, cc-mate auto-selects only when the selected scope has exactly one mate.
+- `--scope machine|directory|repo` controls discovery for auto-selection and `mates`.
+
+`doctor` checks Bun, broker health, visible mates, Claude Code CLI availability, and MCP registration:
+
+```bash
+bun cli.ts doctor --json
 ```
 
 ## Features
@@ -84,6 +121,8 @@ The broker daemon starts automatically on first launch.
 |------|-------------|
 | `list_mates` | Discover Claude Code instances — scoped to `machine`, `directory`, or `repo` |
 | `send_message` | Send a message to another instance (arrives instantly via channel push) |
+| `reply` | Reply to the latest inbound channel message |
+| `respond_call` | Reply to a request/response call by `request_id` |
 | `set_summary` | Describe what you're working on (visible to other mates) |
 | `check_messages` | Manually poll for messages (fallback if not using channel mode) |
 
@@ -155,11 +194,25 @@ One Claude can assign structured tasks to another, track progress, review result
 ## CLI
 
 ```bash
-bun cli.ts status            # broker status + all mates
-bun cli.ts mates             # list mates
-bun cli.ts send <id> <msg>   # send a message to a session
-bun cli.ts kill-broker       # stop the broker
+bun cli.ts doctor                         # diagnostics for broker, Claude CLI, and visible mates
+bun cli.ts status                         # broker status + all mates
+bun cli.ts mates --scope repo             # list mates by machine, directory, or repo
+bun cli.ts send <id> <msg>                # fire-and-forget message
+bun cli.ts call --to <id> <msg>           # request/response call, prints final answer
+bun cli.ts call --to <id> --json <msg>    # stable JSON envelope for automation
+bun cli.ts chat --to <id> --turn <msg>    # multi-turn calls over one conversation id
+bun cli.ts kill-broker                    # stop the broker
 ```
+
+When installed or linked as a package, the same commands are available as `cc-mate ...`.
+
+`call` and `chat` support:
+- `--to <id>` / `--target <id>` for explicit target selection
+- `--scope machine|directory|repo` for auto-selection
+- `--timeout <seconds>` or `--timeout-ms <ms>` for the response deadline
+- `--connect-timeout <seconds>` or `--connect-timeout-ms <ms>` for broker requests
+- `--conversation-id <id>` or `--continue <id>` to group turns
+- `--json` for parseable results and errors
 
 ## Configuration
 

@@ -157,6 +157,60 @@ function getTty(): string | null {
   return null;
 }
 
+type ParsedMeta = Record<string, unknown>;
+
+function parseMessageMeta(meta: string | null): ParsedMeta | null {
+  if (!meta) return null;
+  try {
+    const parsed = JSON.parse(meta) as unknown;
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? parsed as ParsedMeta
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function metaString(meta: ParsedMeta | null, key: string): string | null {
+  const value = meta?.[key];
+  return typeof value === "string" ? value : null;
+}
+
+function isTaskEventMeta(meta: ParsedMeta | null): meta is ParsedMeta & {
+  task_id: string;
+  event_type: string;
+  to_status: string;
+} {
+  return Boolean(
+    meta
+      && typeof meta.task_id === "string"
+      && typeof meta.event_type === "string"
+      && typeof meta.to_status === "string"
+  );
+}
+
+function isCallRequestMeta(meta: ParsedMeta | null): meta is ParsedMeta & {
+  kind: "call_request";
+  request_id: string;
+} {
+  return metaString(meta, "kind") === "call_request" && typeof meta?.request_id === "string";
+}
+
+function callResponseMeta(args: {
+  request_id: string;
+  status?: "ok" | "error";
+  final?: boolean;
+}) {
+  return {
+    kind: "call_response",
+    schema_version: 1,
+    request_id: args.request_id,
+    status: args.status ?? "ok",
+    final: args.final ?? true,
+    created_at: new Date().toISOString(),
+  };
+}
+
 // --- State ---
 
 let myId: MateId | null = null;
@@ -164,7 +218,9 @@ let myCwd = process.cwd();
 let myGitRoot: string | null = null;
 
 // Track pending replies — maps from_id → push timestamp for nudge logic
-const pendingReplies = new Map<string, { pushedAt: number; nudgeCount: number }>();
+const pendingReplies = new Map<string, { pushedAt: number; nudgeCount: number; requestId?: string }>();
+// Explicit call requests keyed by request_id, used by respond_call.
+const pendingCallRequests = new Map<string, { fromId: string; pushedAt: number }>();
 // Last received channel message sender — used by the `reply` tool
 let lastReceivedFromId: string | null = null;
 
@@ -182,11 +238,15 @@ const mcp = new Server(
 Messages arrive as <channel source="cc-mate" from_id="ID" ...>message</channel>
 
 REQUIRED PROTOCOL for every inbound <channel> message:
-Step 1: IMMEDIATELY call reply(message="Acknowledged, working on it...") BEFORE doing any analysis. This is mandatory — do it first.
+Step 1: IMMEDIATELY acknowledge BEFORE doing any analysis. This is mandatory — do it first.
+  - If the channel meta includes kind="call_request" and request_id="...", call respond_call(request_id="...", message="Acknowledged, working on it...", final=false).
+  - Otherwise call reply(message="Acknowledged, working on it...").
 Step 2: Do your work (read files, analyze code, etc.)
-Step 3: Call reply(message="your full response here") to deliver the result.
+Step 3: Deliver the result.
+  - For call_request messages, call respond_call(request_id="...", message="your full response here", final=true).
+  - Otherwise call reply(message="your full response here").
 
-You MUST call reply (or send_message) in BOTH Step 1 and Step 3.
+You MUST call respond_call, reply, or send_message in BOTH Step 1 and Step 3.
 Writing text without calling the tool does NOT deliver your response — the sender sees nothing.
 NEVER respond to a <channel> message with plain text only.
 
@@ -240,7 +300,7 @@ const TOOLS = [
   {
     name: "reply",
     description:
-      "Reply to the most recent inbound channel message. This is the PRIMARY way to respond when you receive a message from another instance. Automatically sends to whoever messaged you last.",
+      "Reply to the most recent inbound channel message. For call_request messages, prefer respond_call. Automatically sends to whoever messaged you last.",
     inputSchema: {
       type: "object" as const,
       properties: {
@@ -252,8 +312,53 @@ const TOOLS = [
           type: "string" as const,
           description: "Override recipient (optional — defaults to last message sender)",
         },
+        request_id: {
+          type: "string" as const,
+          description: "Optional request id to attach when replying to a call_request",
+        },
+        final: {
+          type: "boolean" as const,
+          description: "Whether this is the final call response when request_id is provided (default: true)",
+        },
+        status: {
+          type: "string" as const,
+          enum: ["ok", "error"],
+          description: "Call response status when request_id is provided (default: ok)",
+        },
       },
       required: ["message"],
+    },
+  },
+  {
+    name: "respond_call",
+    description:
+      "Respond to a request_id-bearing call_request from another process. Use final=false for the immediate acknowledgement and final=true for the final answer.",
+    inputSchema: {
+      type: "object" as const,
+      properties: {
+        request_id: {
+          type: "string" as const,
+          description: "The request_id from the inbound channel metadata",
+        },
+        message: {
+          type: "string" as const,
+          description: "Response text to send back to the caller",
+        },
+        final: {
+          type: "boolean" as const,
+          description: "Set false for acknowledgement/progress, true for the final response (default: true)",
+        },
+        status: {
+          type: "string" as const,
+          enum: ["ok", "error"],
+          description: "Final response status (default: ok)",
+        },
+        to_id: {
+          type: "string" as const,
+          description: "Override recipient (optional — defaults to the sender for request_id)",
+        },
+      },
+      required: ["request_id", "message"],
     },
   },
   {
@@ -510,7 +615,19 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
     }
 
     case "reply": {
-      const { message, to_id: explicitTo } = args as { message: string; to_id?: string };
+      const {
+        message,
+        to_id: explicitTo,
+        request_id,
+        final,
+        status,
+      } = args as {
+        message: string;
+        to_id?: string;
+        request_id?: string;
+        final?: boolean;
+        status?: "ok" | "error";
+      };
       const replyTo = explicitTo ?? lastReceivedFromId;
       if (!myId) {
         return { content: [{ type: "text" as const, text: "Not registered with broker yet" }], isError: true };
@@ -520,13 +637,57 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
       }
       try {
         const result = await brokerFetch<{ ok: boolean; error?: string }>("/send-message", {
-          from_id: myId, to_id: replyTo, text: message,
+          from_id: myId,
+          to_id: replyTo,
+          text: message,
+          meta: request_id ? callResponseMeta({ request_id, final, status }) : undefined,
         });
         if (!result.ok) {
           return { content: [{ type: "text" as const, text: `Failed to send: ${result.error}` }], isError: true };
         }
         pendingReplies.delete(replyTo);
+        if (request_id && final !== false) pendingCallRequests.delete(request_id);
         return { content: [{ type: "text" as const, text: `Reply sent to mate ${replyTo}` }] };
+      } catch (e) {
+        return { content: [{ type: "text" as const, text: `Error: ${e instanceof Error ? e.message : String(e)}` }], isError: true };
+      }
+    }
+
+    case "respond_call": {
+      const {
+        request_id,
+        message,
+        final,
+        status,
+        to_id: explicitTo,
+      } = args as {
+        request_id: string;
+        message: string;
+        final?: boolean;
+        status?: "ok" | "error";
+        to_id?: string;
+      };
+      const pending = pendingCallRequests.get(request_id);
+      const replyTo = explicitTo ?? pending?.fromId ?? lastReceivedFromId;
+      if (!myId) {
+        return { content: [{ type: "text" as const, text: "Not registered with broker yet" }], isError: true };
+      }
+      if (!replyTo) {
+        return { content: [{ type: "text" as const, text: "No caller found for request_id. Provide to_id explicitly." }], isError: true };
+      }
+      try {
+        const result = await brokerFetch<{ ok: boolean; error?: string }>("/send-message", {
+          from_id: myId,
+          to_id: replyTo,
+          text: message,
+          meta: callResponseMeta({ request_id, final, status }),
+        });
+        if (!result.ok) {
+          return { content: [{ type: "text" as const, text: `Failed to send: ${result.error}` }], isError: true };
+        }
+        pendingReplies.delete(replyTo);
+        if (final !== false) pendingCallRequests.delete(request_id);
+        return { content: [{ type: "text" as const, text: `Call response sent to mate ${replyTo}` }] };
       } catch (e) {
         return { content: [{ type: "text" as const, text: `Error: ${e instanceof Error ? e.message : String(e)}` }], isError: true };
       }
@@ -709,9 +870,9 @@ async function pollAndPushMessages() {
     }
 
     for (const msg of result.messages) {
-      const taskMeta = msg.meta ? JSON.parse(msg.meta) as {
-        task_id: string; event_type: string; to_status: string;
-      } : null;
+      const rawMeta = parseMessageMeta(msg.meta);
+      const taskMeta = isTaskEventMeta(rawMeta) ? rawMeta : null;
+      const callRequestMeta = isCallRequestMeta(rawMeta) ? rawMeta : null;
 
       let fromSummary = "";
       let fromCwd = "";
@@ -735,12 +896,34 @@ async function pollAndPushMessages() {
         meta.task_id = taskMeta.task_id;
         meta.event_type = taskMeta.event_type;
         meta.to_status = taskMeta.to_status;
+      } else if (callRequestMeta) {
+        meta.kind = "call_request";
+        meta.request_id = callRequestMeta.request_id;
+        const replyTo = metaString(rawMeta, "reply_to");
+        const origin = metaString(rawMeta, "origin");
+        const conversationId = metaString(rawMeta, "conversation_id");
+        if (replyTo) meta.reply_to = replyTo;
+        if (origin) meta.origin = origin;
+        if (conversationId) meta.conversation_id = conversationId;
       }
 
       // Structured action hint — survives context compaction and "lost in the middle".
       let content = msg.text;
       if (taskMeta) {
         content += `\n\n---\nACTION REQUIRED: call the appropriate task tool for task ${taskMeta.task_id}\n---`;
+      } else if (callRequestMeta) {
+        const requestId = callRequestMeta.request_id;
+        content += `\n\n---\n`
+          + `CALL REQUEST ID: ${requestId}\n`
+          + `RESPONSE PROTOCOL (mandatory):\n`
+          + `Step 1: call respond_call(request_id="${requestId}", message="Acknowledged, working on it...", final=false)\n`
+          + `Step 2: do your work\n`
+          + `Step 3: call respond_call(request_id="${requestId}", message="your full response", final=true)\n`
+          + `WARNING: Plain text output is NOT delivered. ONLY tool calls reach the caller.\n`
+          + `---`;
+        lastReceivedFromId = msg.from_id;
+        pendingReplies.set(msg.from_id, { pushedAt: Date.now(), nudgeCount: 0, requestId });
+        pendingCallRequests.set(requestId, { fromId: msg.from_id, pushedAt: Date.now() });
       } else if (msg.from_id !== "broker") {
         content += `\n\n---\n`
           + `RESPONSE PROTOCOL (mandatory):\n`
@@ -818,10 +1001,13 @@ async function main() {
         pending.nudgeCount++;
         pending.pushedAt = now;
         log(`Nudge #${pending.nudgeCount} for unreplied message from ${fromId}`);
+        const responseHint = pending.requestId
+          ? `Call respond_call(request_id="${pending.requestId}", message="...", final=true) NOW.`
+          : `Call reply(message="...") or send_message(to_id="${fromId}", message="...") NOW.`;
         await mcp.notification({
           method: "notifications/claude/channel",
           params: {
-            content: `REMINDER: You received a message from mate ${fromId} but have not replied yet. Call reply(message="...") or send_message(to_id="${fromId}", message="...") NOW.`,
+            content: `REMINDER: You received a message from mate ${fromId} but have not replied yet. ${responseHint}`,
             meta: { from_id: "system", from_summary: "", from_cwd: "", sent_at: new Date().toISOString() },
           },
         });
