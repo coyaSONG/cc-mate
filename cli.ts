@@ -347,6 +347,14 @@ function callPromptText(requestId: string, prompt: string): string {
   ].join("\n");
 }
 
+function isAcknowledgement(text: string): boolean {
+  const normalized = text.trim().toLowerCase();
+  return normalized === "acknowledged, working on it..."
+    || normalized === "acknowledged"
+    || normalized.startsWith("acknowledged,")
+    || normalized.includes("working on it");
+}
+
 async function sendCallCancelled(args: {
   callerId: string;
   targetId: string;
@@ -419,7 +427,25 @@ async function runCallTurn(args: {
     for (const msg of poll.messages) {
       if (msg.from_id !== args.target.id) continue;
       const meta = parseMeta(msg.meta);
-      if (!meta || meta.kind !== "call_response" || meta.request_id !== requestId) continue;
+      if (!meta || meta.kind !== "call_response") {
+        if (isAcknowledgement(msg.text)) {
+          interimMessages.push({ text: msg.text, sent_at: msg.sent_at });
+          continue;
+        }
+
+        return {
+          ok: true,
+          status: "ok",
+          target_id: args.target.id,
+          caller_id: args.callerId,
+          request_id: requestId,
+          conversation_id: args.conversationId,
+          answer: msg.text,
+          elapsed_ms: Date.now() - startedAt,
+          interim_messages: interimMessages,
+        };
+      }
+      if (meta.request_id !== requestId) continue;
 
       const final = meta.final !== false;
       const status = meta.status === "error" ? "error" : "ok";

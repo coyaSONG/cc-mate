@@ -345,6 +345,32 @@ describe("call", () => {
     }
   });
 
+  test("accepts legacy reply responses without call_response metadata", async () => {
+    const target = await registerTestMate();
+    try {
+      const proc = spawnCli("call", "--to", target.id, "--timeout-ms", "3000", "legacy", "reply");
+      const prompt = await waitForMessage(target.id);
+
+      await brokerPost("/send-message", {
+        from_id: target.id,
+        to_id: prompt.from_id,
+        text: "Acknowledged, working on it...",
+      });
+      await brokerPost("/send-message", {
+        from_id: target.id,
+        to_id: prompt.from_id,
+        text: "legacy final answer",
+      });
+
+      const { stdout, code } = await collectCli(proc);
+      expect(code).toBe(0);
+      expect(stdout.trim()).toBe("legacy final answer");
+    } finally {
+      await brokerPost("/unregister", { id: target.id });
+      target.child.kill();
+    }
+  });
+
   test("explicit target receives the prompt when multiple mates exist", async () => {
     const target = await registerTestMate({ summary: "target" });
     const other = await registerTestMate({ summary: "other" });
